@@ -3,13 +3,13 @@ use clap::Parser;
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
-use threadpool::ThreadPool;
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::sync::mpsc::channel;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, time::Duration};
 use std::{fs, thread};
-use std::sync::mpsc::channel;
+use threadpool::ThreadPool;
 
 static DEBUG_DELAY: u64 = 0;
 
@@ -32,11 +32,11 @@ struct Args {
     recursive: bool,
 
     /// Display debug information
-    #[arg(short, long, default_value = "true")]
+    #[arg(long, default_value = "false")]
     debug: bool,
 
     /// Include 0 byte files
-    #[arg(long, default_value = "false")]
+    #[arg(long, short = '0', default_value = "false")]
     include_zero_byte_files: bool,
 
     /// Dry run the program
@@ -45,12 +45,21 @@ struct Args {
     dry_run: bool,
 
     /// Include hidden files
-    #[arg(long, default_value = "false")]
+    #[arg(long, short = 'H', default_value = "false")]
     include_hidden_files: bool,
 
+    /// Hide progress indicators
+    #[arg(short, long, default_value = "false")]
+    quiet: bool,
+
     /// Display verbose output
-    #[arg(long, default_value = "false")]
+    #[arg(short, long, default_value = "false")]
     verbose: bool,
+
+    /// Action to take with duplicate files
+    /// Options: delete, move, copy
+    #[arg(short, long, default_value = "delete", value_parser = clap::builder::PossibleValuesParser::new(["delete", "move", "copy"]))]
+    action: String,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +93,9 @@ fn get_command_line_arguments() -> Args {
         println!("Dry run: {}", args.dry_run);
         println!("Include hidden files: {}", args.include_hidden_files);
         println!("Verbose: {}", args.verbose);
+        println!("Quiet: {}", args.quiet);
         println!("Wildcard: {}", args.wildcard);
+        println!("Action: {}", args.action);
         let default_parallelism_approx = num_cpus::get();
         println!("Available cpus: {}", default_parallelism_approx);
         println!();
@@ -92,10 +103,9 @@ fn get_command_line_arguments() -> Args {
     args
 }
 fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    
     // get the files in the directory
     let folder_path: String = args.path.clone();
-    
+
     let _result = get_files_in_directory(args, folder_path, None);
     let _files = match _result {
         Ok(files) => files,
@@ -107,9 +117,9 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.verbose {
         println!("Found {} files", _files.len());
     }
-    
+
     // identify the duplicates
-    let hash_map = identify_duplicates(args,_files);
+    let hash_map = identify_duplicates(args, _files);
 
     // print the duplicates
     let mut duplicates_found = 0;
@@ -133,14 +143,14 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("Found {} duplicate instances", duplicates_found);
     }
-    
+
     Ok(())
 }
 
 fn get_files_in_directory(
     args: &Args,
     folder_path: String,
-    multi: Option<&MultiProgress>
+    multi: Option<&MultiProgress>,
 ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
     let multi = match multi {
         Some(m) => m,
@@ -160,9 +170,15 @@ fn get_files_in_directory(
             return Err(Box::from("The path provided is not a directory"));
         }
     }
+    if args.debug {
+        let _ = multi.println(format!("Collecting objects in: {}", folder_path));
+    }
     let entries = fs::read_dir(&folder_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
+    if args.debug {
+        let _ = multi.println(format!("Finished collecting objects in: {}", folder_path));
+    }
 
     let sty_folders = ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
         .unwrap()
@@ -177,13 +193,23 @@ fn get_files_in_directory(
         .progress_chars("##-");
 
     // process directories first
-    let bar = multi.add(ProgressBar::new_spinner());
+    //let bar = multi.add(ProgressBar::new_spinner());
+    let bar = if args.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new_spinner())
+    };
     bar.set_style(sty_processing);
     bar.enable_steady_tick(Duration::from_millis(100));
     bar.set_message("Processing objects");
+
     let mut folder_count = 0;
     let mut file_count = 0;
     let mut folders: Vec<PathBuf> = Vec::new();
+
+    if args.verbose {
+        let _ = multi.println(format!("Iterating entries: {}", folder_path));
+    }
     for entry in entries.iter() {
         if entry.is_dir() {
             folder_count += 1;
@@ -192,10 +218,17 @@ fn get_files_in_directory(
             file_count += 1;
         }
     }
+    if args.verbose {
+        let _ = multi.println(format!("Completed iterating entries: {}", folder_path));
+    }
     bar.finish_and_clear();
     multi.remove(&bar);
 
-    let bar2 = multi.add(ProgressBar::new(folder_count as u64));
+    let bar2 = if args.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new(folder_count as u64))
+    };
     bar2.set_style(sty_folders);
 
     for fld in folders.iter() {
@@ -249,7 +282,11 @@ fn get_files_in_directory(
     bar2.finish_and_clear();
     multi.remove(&bar2);
 
-    let bar2 = multi.add(ProgressBar::new(file_count as u64));
+    let bar2 = if args.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new(file_count as u64))
+    };
     bar2.set_style(sty_files);
 
     for entry in entries.iter() {
@@ -340,10 +377,7 @@ fn get_files_in_directory(
     Ok(files)
 }
 
-fn identify_duplicates(
-    args: &Args,
-    files: Vec<FileInfo>,
-) -> HashMap<String, Vec<FileInfo>> {
+fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     let multi = MultiProgress::new();
     let workers = num_cpus::get();
@@ -355,9 +389,18 @@ fn identify_duplicates(
     let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
         .unwrap()
         .progress_chars("##-");
-    let bar = multi.add(ProgressBar::new(files.len() as u64));
+
+    let bar = if args.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new(files.len() as u64))
+    };
     bar.set_style(sty_dupes);
-    let bar2 = multi.add(ProgressBar::new_spinner());
+    let bar2 = if args.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new_spinner())
+    };
     bar2.enable_steady_tick(Duration::from_millis(100));
     bar2.set_style(sty_processing);
     bar2.set_message("Identifying duplicates...");
@@ -371,7 +414,6 @@ fn identify_duplicates(
 
     // setup our jobs for the thread pool
     for file in files {
-
         let tx = tx.clone();
         let bar = bar.clone();
         let file_path = file.path.clone();
@@ -380,13 +422,12 @@ fn identify_duplicates(
             let hash_string = get_hash_of_file(&file_path, &bar);
             tx.send((hash_string, file)).unwrap();
         });
-
     }
 
-    // wait for the jobs to complete, and process the result 
+    // wait for the jobs to complete, and process the result
     rx.iter().take(files_count).for_each(|(hash_string, file)| {
         if args.verbose {
-            bar.println(format!(
+            let _ = multi.println(format!(
                 "File: {} [{} bytes] [hash: {}]",
                 file.path, file.size, hash_string
             ));
@@ -400,7 +441,6 @@ fn identify_duplicates(
             vec.push(file);
         }
         bar.inc(1);
-        
     });
 
     bar.finish_and_clear();
@@ -431,24 +471,7 @@ fn get_md5_hash(buffer: &Vec<u8>) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    #[ignore]
-    fn test_get_command_line_arguments() {
-        // test default values for cmd args
-        let args = get_command_line_arguments();
-        assert_eq!(args.path, ".");
-        assert_eq!(args.recursive, false);
-        assert_eq!(args.debug, true);
-        assert_eq!(args.include_zero_byte_files, false);
-        assert_eq!(args.dry_run, false);
-        assert_eq!(args.include_hidden_files, false);
-        assert_eq!(args.verbose, false);
-        assert_eq!(args.wildcard, "*");
-    }
-
-    #[test]
-    fn test_get_files_in_directory() {
-        
+    fn create_default_command_line_arguments() -> Args {
         let args = Args {
             path: "data".to_string(),
             recursive: false,
@@ -457,127 +480,81 @@ mod tests {
             dry_run: false,
             include_hidden_files: false,
             verbose: false,
+            quiet: false,
             wildcard: "*".to_string(),
+            action: "delete".to_string(),
         };
+        args
+    }
+
+    #[test]
+    fn test_get_files_in_directory() {
+        let args = create_default_command_line_arguments();
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 5);
     }
 
     #[test]
     fn test_get_files_in_directory_wildcard() {
-        
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*testdupe*.txt".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.wildcard = "*testdupe*.txt".to_string();
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 4);
     }
 
     #[test]
     fn test_get_files_in_directory_include_empty() {
-        
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: true,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.include_zero_byte_files = true;
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 7);
     }
 
     #[test]
     fn test_get_files_in_directory_include_hidden() {
-        
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: true,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.include_hidden_files = true;
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 6);
     }
 
     #[test]
     fn test_get_files_in_directory_include_all_files() {
-        
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: true,
-            dry_run: false,
-            include_hidden_files: true,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.include_hidden_files = true;
+        args.include_zero_byte_files = true;
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 8);
     }
 
     #[test]
     fn test_get_files_in_directory_include_recursive() {
-        
-        let args = Args {
-            path: "data".to_string(),
-            recursive: true,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.recursive = true;
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 16);
     }
 
     #[test]
     fn test_get_files_in_directory_include_recursive_with_hidden() {
-        
-        let args = Args {
-            path: "data".to_string(),
-            recursive: true,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: true,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.recursive = true;
+        args.include_hidden_files = true;
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 18);
     }
 
     #[test]
     fn test_get_files_in_directory_bad_path() {
-        
-        let args = Args {
-            path: "badpath!!!".to_string(),
-            recursive: true,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.path = "badpath!!!".to_string();
+
         let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
         assert!(result.is_err());
     }
@@ -611,48 +588,25 @@ mod tests {
 
     #[test]
     fn test_start_search() {
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let args = create_default_command_line_arguments();
+
         let result = start_search(&args);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_start_search_bad_path() {
-        let args = Args {
-            path: "data-badpath!!!".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let mut args = create_default_command_line_arguments();
+        args.path = "data-badpath!!!".to_string();
+
         let result = start_search(&args);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_identify_duplicates() {
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let args = create_default_command_line_arguments();
+
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
@@ -667,16 +621,8 @@ mod tests {
 
     #[test]
     fn test_identify_duplicates_no_files() {
-        let args = Args {
-            path: "data".to_string(),
-            recursive: false,
-            debug: false,
-            include_zero_byte_files: false,
-            dry_run: false,
-            include_hidden_files: false,
-            verbose: false,
-            wildcard: "*".to_string(),
-        };
+        let args = create_default_command_line_arguments();
+
         let files = Vec::new();
         let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
