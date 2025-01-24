@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
@@ -17,7 +17,17 @@ static DEBUG_DELAY: u64 = 0;
 #[command(name = "Dupefindr", version)]
 #[command(about = "A tool to find duplicate files", long_about = None)]
 #[command(propagate_version = true)]
+#[command(author = "Ken Salter")]
 struct Args {
+    #[command(flatten)]
+    shared: SharedOptions,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Parser, Debug, Clone)]
+struct SharedOptions {
     /// The directory to search for duplicates in.
     #[arg(short, long, default_value = ".")]
     path: String,
@@ -35,9 +45,9 @@ struct Args {
     #[arg(long, default_value = "false")]
     debug: bool,
 
-    /// Include 0 byte files
+    /// Include empty files
     #[arg(long, short = '0', default_value = "false")]
-    include_zero_byte_files: bool,
+    include_empty_files: bool,
 
     /// Dry run the program
     /// This will not delete or modify any files
@@ -55,12 +65,33 @@ struct Args {
     /// Display verbose output
     #[arg(short, long, default_value = "false")]
     verbose: bool,
-
-    /// Action to take with duplicate files
-    /// Options: delete, move, copy
-    #[arg(short, long, default_value = "delete", value_parser = clap::builder::PossibleValuesParser::new(["delete", "move", "copy"]))]
-    action: String,
 }
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+
+    #[command(name = "find", about = "Find duplicate files")]
+    FindDuplicates {},
+    
+    #[command(name = "move", about = "Move duplicate files to a new location")]
+    MoveDuplicates {
+        /// The directory to move to.
+        #[arg(short, long)]
+        location: String,
+    },
+    #[command(name = "copy", about = "Copy duplicate files to a new location")]
+    CopyDuplicates {
+        /// The directory to copy to.
+        #[arg(short, long)]
+        location: String,
+    },
+    #[command(name = "delete", about = "Delete duplicate files")]
+    DeleteDuplicates {},
+
+    
+}
+
+
 
 #[derive(Debug, Clone)]
 struct FileInfo {
@@ -84,27 +115,32 @@ fn main() {
 
 fn get_command_line_arguments() -> Args {
     let args = Args::parse();
-    if args.debug {
-        println!("Searching for duplicates in: {}", args.path);
-        if args.recursive {
+    if args.shared.debug {
+        println!("Searching for duplicates in: {}", args.shared.path);
+        if args.shared.recursive {
             println!("Recursively searching for duplicates");
         }
-        println!("Include empty files: {}", args.include_zero_byte_files);
-        println!("Dry run: {}", args.dry_run);
-        println!("Include hidden files: {}", args.include_hidden_files);
-        println!("Verbose: {}", args.verbose);
-        println!("Quiet: {}", args.quiet);
-        println!("Wildcard: {}", args.wildcard);
-        println!("Action: {}", args.action);
+        println!(
+            "Include empty files: {}",
+            args.shared.include_empty_files
+        );
+        println!("Dry run: {}", args.shared.dry_run);
+        println!("Include hidden files: {}", args.shared.include_hidden_files);
+        println!("Verbose: {}", args.shared.verbose);
+        println!("Quiet: {}", args.shared.quiet);
+        println!("Wildcard: {}", args.shared.wildcard);
+        // println!("Action: {}", args.action);
+        // println!("Action location: {}", args.action_location);
         let default_parallelism_approx = num_cpus::get();
         println!("Available cpus: {}", default_parallelism_approx);
         println!();
     }
+
     args
 }
 fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // get the files in the directory
-    let folder_path: String = args.path.clone();
+    let folder_path: String = args.shared.path.clone();
 
     let _result = get_files_in_directory(args, folder_path, None);
     let _files = match _result {
@@ -114,7 +150,7 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             return Err(e);
         }
     };
-    if args.verbose {
+    if args.shared.verbose {
         println!("Found {} files", _files.len());
     }
 
@@ -123,18 +159,28 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // print the duplicates
     let mut duplicates_found = 0;
+    let mut duplicates_total_size: i64 = 0;
     for (hash, files) in hash_map.iter() {
         if files.len() > 1 {
             duplicates_found += 1;
-            println!("Found {} duplicates for hash: {}", files.len(), hash);
+            if args.shared.verbose {
+                println!("Found {} duplicates for hash: {}", files.len(), hash);
+            }
             for file in files {
-                println!(
-                    "File: {} [created: {}] [modified: {}] [{} bytes]",
-                    file.path,
-                    file.created_at.to_rfc2822(),
-                    file.modified_at.to_rfc2822(),
-                    file.size
-                );
+                if args.shared.verbose {
+                    println!(
+                        "File: {} [created: {}] [modified: {}] [{} bytes]",
+                        file.path,
+                        file.created_at.to_rfc2822(),
+                        file.modified_at.to_rfc2822(),
+                        file.size
+                    );
+                }
+                if files.iter().position(|f| f.path == file.path).unwrap() != 0 {
+                    duplicates_total_size += file.size as i64;
+                }
+            }
+            if args.shared.verbose {
                 println!();
             }
         }
@@ -142,7 +188,11 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if duplicates_found == 0 {
         println!("No duplicates found");
     } else {
-        println!("Found {} duplicate instances", duplicates_found);
+        println!(
+            "Found {} duplicates with total size {}",
+            duplicates_found,
+            bytesize::ByteSize(duplicates_total_size as u64)
+        );
     }
 
     Ok(())
@@ -171,13 +221,13 @@ fn get_files_in_directory(
             return Err(Box::from("The path provided is not a directory"));
         }
     }
-    if args.debug {
+    if args.shared.debug {
         let _ = multi.println(format!("Collecting objects in: {}", folder_path));
     }
     let entries = fs::read_dir(&folder_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
-    if args.debug {
+    if args.shared.debug {
         let _ = multi.println(format!("Finished collecting objects in: {}", folder_path));
     }
 
@@ -195,7 +245,7 @@ fn get_files_in_directory(
 
     // process directories first
     //let bar = multi.add(ProgressBar::new_spinner());
-    let bar = if args.quiet {
+    let bar = if args.shared.quiet {
         ProgressBar::hidden()
     } else {
         multi.add(ProgressBar::new_spinner())
@@ -212,7 +262,7 @@ fn get_files_in_directory(
     let (tx, rx) = channel();
     let files_count = entries.len();
 
-    if args.verbose {
+    if args.shared.debug {
         let _ = multi.println(format!("Iterating entries: {}", folder_path));
     }
     // use thread pool to optimize the process
@@ -223,15 +273,13 @@ fn get_files_in_directory(
             let is_dir = entry.is_dir();
             tx.send((entry, is_dir)).unwrap();
         });
-
-        
     }
-    if args.verbose {
+    if args.shared.debug {
         let _ = multi.println(format!("Completed iterating entries: {}", folder_path));
     }
 
     // wait for the jobs to complete, and process the result
-    rx.iter().take(files_count).for_each(|(entry,is_dir)| {
+    rx.iter().take(files_count).for_each(|(entry, is_dir)| {
         if is_dir {
             folder_count += 1;
             folders.push(entry.clone());
@@ -243,7 +291,7 @@ fn get_files_in_directory(
     bar.finish_and_clear();
     multi.remove(&bar);
 
-    let bar2 = if args.quiet {
+    let bar2 = if args.shared.quiet {
         ProgressBar::hidden()
     } else {
         multi.add(ProgressBar::new(folder_count as u64))
@@ -270,8 +318,8 @@ fn get_files_in_directory(
         }
 
         if hidden {
-            if args.include_hidden_files == false {
-                if args.verbose {
+            if args.shared.include_hidden_files == false {
+                if args.shared.verbose {
                     let _ = multi.println(format!(
                         "Ignoring hidden directory: {}",
                         fld.file_name().unwrap().to_str().unwrap()
@@ -282,8 +330,8 @@ fn get_files_in_directory(
             }
         }
 
-        if !args.recursive {
-            if args.verbose {
+        if !args.shared.recursive {
+            if args.shared.verbose {
                 let _ = multi.println(format!(
                     "Ignoring directory: {}",
                     fld.file_name().unwrap().to_str().unwrap()
@@ -301,7 +349,7 @@ fn get_files_in_directory(
     bar2.finish_and_clear();
     multi.remove(&bar2);
 
-    let bar2 = if args.quiet {
+    let bar2 = if args.shared.quiet {
         ProgressBar::hidden()
     } else {
         multi.add(ProgressBar::new(file_count as u64))
@@ -314,9 +362,9 @@ fn get_files_in_directory(
 
         if path.is_file() {
             // determine if the file matches the wildcard
-            let wildcard_pattern = glob::Pattern::new(&args.wildcard)?;
+            let wildcard_pattern = glob::Pattern::new(&args.shared.wildcard)?;
             if !wildcard_pattern.matches_path(path) {
-                if args.verbose {
+                if args.shared.verbose {
                     let _ = multi.println(format!(
                         "Ignoring file (does not match wildcard): {}",
                         path.to_str().unwrap()
@@ -342,12 +390,12 @@ fn get_files_in_directory(
                     hidden = true;
                 }
             }
-            if args.include_hidden_files == false && hidden {
-                if args.verbose {
+            if args.shared.include_hidden_files == false && hidden {
+                if args.shared.verbose {
                     let _ =
                         multi.println(format!("Ignoring hidden file: {}", path.to_str().unwrap()));
                 }
-                if args.debug {
+                if args.shared.debug {
                     thread::sleep(Duration::from_millis(DEBUG_DELAY));
                 }
                 bar2.inc(1);
@@ -355,12 +403,12 @@ fn get_files_in_directory(
             }
             let meta = std::fs::metadata(&path).unwrap();
             let size = meta.len();
-            if size == 0 && !args.include_zero_byte_files {
-                if args.verbose {
+            if size == 0 && !args.shared.include_empty_files {
+                if args.shared.verbose {
                     let _ =
                         multi.println(format!("Ignoring empty file: {}", path.to_str().unwrap()));
                 }
-                if args.debug {
+                if args.shared.debug {
                     thread::sleep(Duration::from_millis(DEBUG_DELAY));
                 }
                 bar2.inc(1);
@@ -385,7 +433,7 @@ fn get_files_in_directory(
             };
             files.push(file_info);
 
-            if args.debug {
+            if args.shared.debug {
                 thread::sleep(Duration::from_millis(DEBUG_DELAY));
             }
             bar2.inc(1);
@@ -409,13 +457,13 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
         .unwrap()
         .progress_chars("##-");
 
-    let bar = if args.quiet {
+    let bar = if args.shared.quiet {
         ProgressBar::hidden()
     } else {
         multi.add(ProgressBar::new(files.len() as u64))
     };
     bar.set_style(sty_dupes);
-    let bar2 = if args.quiet {
+    let bar2 = if args.shared.quiet {
         ProgressBar::hidden()
     } else {
         multi.add(ProgressBar::new_spinner())
@@ -445,7 +493,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
 
     // wait for the jobs to complete, and process the result
     rx.iter().take(files_count).for_each(|(hash_string, file)| {
-        if args.verbose {
+        if args.shared.verbose {
             let _ = multi.println(format!(
                 "File: {} [{} bytes] [hash: {}]",
                 file.path, file.size, hash_string
@@ -491,17 +539,21 @@ mod tests {
     use super::*;
 
     fn create_default_command_line_arguments() -> Args {
-        let args = Args {
+        let shared_options = SharedOptions {
             path: "data".to_string(),
             recursive: false,
             debug: false,
-            include_zero_byte_files: false,
+            include_empty_files: false,
             dry_run: false,
             include_hidden_files: false,
             verbose: false,
             quiet: false,
             wildcard: "*".to_string(),
-            action: "delete".to_string(),
+        };
+        let s1 = shared_options.clone();
+        let args = Args {
+            shared: s1,
+            command: Commands::DeleteDuplicates {},
         };
         args
     }
@@ -516,7 +568,7 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_wildcard() {
         let mut args = create_default_command_line_arguments();
-        args.wildcard = "*testdupe*.txt".to_string();
+        args.shared.wildcard = "*testdupe*.txt".to_string();
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 4);
@@ -525,7 +577,7 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_include_empty() {
         let mut args = create_default_command_line_arguments();
-        args.include_zero_byte_files = true;
+        args.shared.include_empty_files = true;
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 7);
@@ -534,7 +586,7 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_include_hidden() {
         let mut args = create_default_command_line_arguments();
-        args.include_hidden_files = true;
+        args.shared.include_hidden_files = true;
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 6);
@@ -543,8 +595,8 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_include_all_files() {
         let mut args = create_default_command_line_arguments();
-        args.include_hidden_files = true;
-        args.include_zero_byte_files = true;
+        args.shared.include_hidden_files = true;
+        args.shared.include_empty_files = true;
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 8);
@@ -553,7 +605,7 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_include_recursive() {
         let mut args = create_default_command_line_arguments();
-        args.recursive = true;
+        args.shared.recursive = true;
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 16);
@@ -562,8 +614,8 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_include_recursive_with_hidden() {
         let mut args = create_default_command_line_arguments();
-        args.recursive = true;
-        args.include_hidden_files = true;
+        args.shared.recursive = true;
+        args.shared.include_hidden_files = true;
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 18);
@@ -572,7 +624,7 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_bad_path() {
         let mut args = create_default_command_line_arguments();
-        args.path = "badpath!!!".to_string();
+        args.shared.path = "badpath!!!".to_string();
 
         let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
         assert!(result.is_err());
@@ -616,7 +668,7 @@ mod tests {
     #[test]
     fn test_start_search_bad_path() {
         let mut args = create_default_command_line_arguments();
-        args.path = "data-badpath!!!".to_string();
+        args.shared.path = "data-badpath!!!".to_string();
 
         let result = start_search(&args);
         assert!(result.is_err());
