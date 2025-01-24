@@ -3,11 +3,13 @@ use clap::Parser;
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
+use threadpool::ThreadPool;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, time::Duration};
 use std::{fs, thread};
+use std::sync::mpsc::channel;
 
 static DEBUG_DELAY: u64 = 0;
 
@@ -51,7 +53,7 @@ struct Args {
     verbose: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FileInfo {
     path: String,
     size: u64,
@@ -344,7 +346,7 @@ fn identify_duplicates(
 ) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     let multi = MultiProgress::new();
-    let default_parallelism_approx = num_cpus::get();
+    let workers = num_cpus::get();
 
     let sty_dupes =
         ProgressStyle::with_template("ETA {eta} {bar:40.yellow/blue} {pos:>7}/{len:7} {msg}")
@@ -360,8 +362,29 @@ fn identify_duplicates(
     bar2.set_style(sty_processing);
     bar2.set_message("Identifying duplicates...");
 
+    // we will use a thread pool to optimize the hashing process
+    // the thread pool will use one thread per cpu core
+
+    let pool = ThreadPool::new(workers);
+    let (tx, rx) = channel();
+    let files_count = files.len();
+
+    // setup our jobs for the thread pool
     for file in files {
-        let hash_string = get_hash_of_file(&file.path, &bar);
+
+        let tx = tx.clone();
+        let bar = bar.clone();
+        let file_path = file.path.clone();
+
+        pool.execute(move || {
+            let hash_string = get_hash_of_file(&file_path, &bar);
+            tx.send((hash_string, file)).unwrap();
+        });
+
+    }
+
+    // wait for the jobs to complete, and process the result 
+    rx.iter().take(files_count).for_each(|(hash_string, file)| {
         if args.verbose {
             bar.println(format!(
                 "File: {} [{} bytes] [hash: {}]",
@@ -377,10 +400,9 @@ fn identify_duplicates(
             vec.push(file);
         }
         bar.inc(1);
-        if args.debug {
-            thread::sleep(Duration::from_millis(DEBUG_DELAY));
-        }
-    }
+        
+    });
+
     bar.finish_and_clear();
     bar2.finish_and_clear();
 
