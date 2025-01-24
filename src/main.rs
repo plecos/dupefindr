@@ -618,4 +618,52 @@ mod tests {
         let result = start_search(&args);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_identify_duplicates() {
+        let args = Args {
+            path: "data".to_string(),
+            recursive: false,
+            debug: false,
+            include_zero_byte_files: false,
+            dry_run: false,
+            include_hidden_files: false,
+            verbose: false,
+            wildcard: "*".to_string(),
+        };
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
+        let hash_map = identify_duplicates(&args, files);
+        // duplicates are entries in hash_map with more than 1 file
+        let mut duplicates_found = 0;
+        for (_hash, files) in hash_map.iter() {
+            if files.len() > 1 {
+                duplicates_found += 1;
+            }
+        }
+        assert_eq!(duplicates_found, 1);
+    }
+
+    #[test]
+    fn test_identify_duplicates_no_files() {
+        let args = Args {
+            path: "data".to_string(),
+            recursive: false,
+            debug: false,
+            include_zero_byte_files: false,
+            dry_run: false,
+            include_hidden_files: false,
+            verbose: false,
+            wildcard: "*".to_string(),
+        };
+        let files = Vec::new();
+        let hash_map = identify_duplicates(&args, files);
+        // duplicates are entries in hash_map with more than 1 file
+        let mut duplicates_found = 0;
+        for (_hash, files) in hash_map.iter() {
+            if files.len() > 1 {
+                duplicates_found += 1;
+            }
+        }
+        assert_eq!(duplicates_found, 0);
+    }
 }
