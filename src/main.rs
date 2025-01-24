@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
 use std::io::{self, Read};
-use glob;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, time::Duration};
@@ -83,16 +83,18 @@ fn get_command_line_arguments() -> Args {
         println!("Include hidden files: {}", args.include_hidden_files);
         println!("Verbose: {}", args.verbose);
         println!("Wildcard: {}", args.wildcard);
+        let default_parallelism_approx = num_cpus::get();
+        println!("Available cpus: {}", default_parallelism_approx);
         println!();
     }
     args
 }
 fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    let multi = MultiProgress::new();
+    
     // get the files in the directory
     let folder_path: String = args.path.clone();
-    let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
-    let _result = get_files_in_directory(args, folder_path, &multi);
+    
+    let _result = get_files_in_directory(args, folder_path, None);
     let _files = match _result {
         Ok(files) => files,
         Err(e) => {
@@ -103,43 +105,10 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.verbose {
         println!("Found {} files", _files.len());
     }
-    //bar.finish_and_clear();
-    let sty_dupes =
-        ProgressStyle::with_template("ETA {eta} {bar:40.yellow/blue} {pos:>7}/{len:7} {msg}")
-            .unwrap()
-            .progress_chars("##-");
-    let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
-        .unwrap()
-        .progress_chars("##-");
-    let bar = multi.add(ProgressBar::new(_files.len() as u64));
-    bar.set_style(sty_dupes);
-    let bar2 = multi.add(ProgressBar::new_spinner());
-    bar2.enable_steady_tick(Duration::from_millis(100));
-    bar2.set_style(sty_processing);
-    bar2.set_message("Identifying duplicates...");
-    for file in _files {
-        let hash_string = get_hash_of_file(&file.path, &bar);
-        if args.verbose {
-            bar.println(format!(
-                "File: {} [{} bytes] [hash: {}]",
-                file.path, file.size, hash_string
-            ));
-        }
-        if !hash_map.contains_key(&hash_string) {
-            let mut vec = Vec::new();
-            vec.push(file);
-            hash_map.insert(hash_string, vec);
-        } else {
-            let vec = hash_map.get_mut(&hash_string).unwrap();
-            vec.push(file);
-        }
-        bar.inc(1);
-        if args.debug {
-            thread::sleep(Duration::from_millis(DEBUG_DELAY));
-        }
-    }
-    bar.finish_and_clear();
-    bar2.finish_and_clear();
+    
+    // identify the duplicates
+    let hash_map = identify_duplicates(args,_files);
+
     // print the duplicates
     let mut duplicates_found = 0;
     for (hash, files) in hash_map.iter() {
@@ -162,17 +131,19 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("Found {} duplicate instances", duplicates_found);
     }
-    multi.remove(&bar2);
-    multi.remove(&bar);
-    multi.clear().unwrap();
+    
     Ok(())
 }
 
 fn get_files_in_directory(
     args: &Args,
     folder_path: String,
-    multi: &MultiProgress,
+    multi: Option<&MultiProgress>
 ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    let multi = match multi {
+        Some(m) => m,
+        None => &MultiProgress::new(),
+    };
     let mut files: Vec<FileInfo> = Vec::new();
     //let dir_path = std::path::Path::new(folder_path.as_str());
     match fs::metadata(folder_path.as_str()) {
@@ -268,7 +239,7 @@ fn get_files_in_directory(
             let path = fld.as_path();
 
             let sub_files =
-                get_files_in_directory(args, path.to_str().unwrap().to_string(), &multi)?;
+                get_files_in_directory(args, path.to_str().unwrap().to_string(), Some(multi))?;
             files.extend(sub_files);
         }
         bar2.inc(1);
@@ -284,17 +255,19 @@ fn get_files_in_directory(
         let _ = bar2.set_message(format!("Processing: {}", path.to_str().unwrap()));
 
         if path.is_file() {
-
             // determine if the file matches the wildcard
             let wildcard_pattern = glob::Pattern::new(&args.wildcard)?;
             if !wildcard_pattern.matches_path(path) {
                 if args.verbose {
-                    let _ = multi.println(format!("Ignoring file (does not match wildcard): {}", path.to_str().unwrap()));
+                    let _ = multi.println(format!(
+                        "Ignoring file (does not match wildcard): {}",
+                        path.to_str().unwrap()
+                    ));
                 }
                 bar2.inc(1);
                 continue;
             }
-            
+
             let hidden: bool;
             #[cfg(not(target_os = "windows"))]
             {
@@ -365,6 +338,59 @@ fn get_files_in_directory(
     Ok(files)
 }
 
+fn identify_duplicates(
+    args: &Args,
+    files: Vec<FileInfo>,
+) -> HashMap<String, Vec<FileInfo>> {
+    let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
+    let multi = MultiProgress::new();
+    let default_parallelism_approx = num_cpus::get();
+
+    let sty_dupes =
+        ProgressStyle::with_template("ETA {eta} {bar:40.yellow/blue} {pos:>7}/{len:7} {msg}")
+            .unwrap()
+            .progress_chars("##-");
+    let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
+        .unwrap()
+        .progress_chars("##-");
+    let bar = multi.add(ProgressBar::new(files.len() as u64));
+    bar.set_style(sty_dupes);
+    let bar2 = multi.add(ProgressBar::new_spinner());
+    bar2.enable_steady_tick(Duration::from_millis(100));
+    bar2.set_style(sty_processing);
+    bar2.set_message("Identifying duplicates...");
+
+    for file in files {
+        let hash_string = get_hash_of_file(&file.path, &bar);
+        if args.verbose {
+            bar.println(format!(
+                "File: {} [{} bytes] [hash: {}]",
+                file.path, file.size, hash_string
+            ));
+        }
+        if !hash_map.contains_key(&hash_string) {
+            let mut vec = Vec::new();
+            vec.push(file);
+            hash_map.insert(hash_string, vec);
+        } else {
+            let vec = hash_map.get_mut(&hash_string).unwrap();
+            vec.push(file);
+        }
+        bar.inc(1);
+        if args.debug {
+            thread::sleep(Duration::from_millis(DEBUG_DELAY));
+        }
+    }
+    bar.finish_and_clear();
+    bar2.finish_and_clear();
+
+    multi.remove(&bar2);
+    multi.remove(&bar);
+    multi.clear().unwrap();
+
+    hash_map
+}
+
 fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> String {
     let mut file = std::fs::File::open(file_path).unwrap();
     let mut buffer = Vec::new();
@@ -400,7 +426,7 @@ mod tests {
 
     #[test]
     fn test_get_files_in_directory() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: false,
@@ -411,13 +437,13 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 5);
     }
 
     #[test]
     fn test_get_files_in_directory_wildcard() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: false,
@@ -428,13 +454,13 @@ mod tests {
             verbose: false,
             wildcard: "*testdupe*.txt".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 4);
     }
 
     #[test]
     fn test_get_files_in_directory_include_empty() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: false,
@@ -445,13 +471,13 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 7);
     }
 
     #[test]
     fn test_get_files_in_directory_include_hidden() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: false,
@@ -462,13 +488,13 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 6);
     }
 
     #[test]
     fn test_get_files_in_directory_include_all_files() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: false,
@@ -479,13 +505,13 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 8);
     }
 
     #[test]
     fn test_get_files_in_directory_include_recursive() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: true,
@@ -496,13 +522,13 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 16);
     }
 
     #[test]
     fn test_get_files_in_directory_include_recursive_with_hidden() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "data".to_string(),
             recursive: true,
@@ -513,13 +539,13 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let files = get_files_in_directory(&args, "data".to_string(), &multi).unwrap();
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 18);
     }
 
     #[test]
     fn test_get_files_in_directory_bad_path() {
-        let multi = MultiProgress::new();
+        
         let args = Args {
             path: "badpath!!!".to_string(),
             recursive: true,
@@ -530,7 +556,7 @@ mod tests {
             verbose: false,
             wildcard: "*".to_string(),
         };
-        let result = get_files_in_directory(&args, "badpath!!!".to_string(), &multi);
+        let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
         assert!(result.is_err());
     }
 
