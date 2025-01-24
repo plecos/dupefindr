@@ -135,6 +135,7 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     file.modified_at.to_rfc2822(),
                     file.size
                 );
+                println!();
             }
         }
     }
@@ -206,21 +207,39 @@ fn get_files_in_directory(
     let mut folder_count = 0;
     let mut file_count = 0;
     let mut folders: Vec<PathBuf> = Vec::new();
+    let workers = num_cpus::get();
+    let pool = ThreadPool::new(workers);
+    let (tx, rx) = channel();
+    let files_count = entries.len();
 
     if args.verbose {
         let _ = multi.println(format!("Iterating entries: {}", folder_path));
     }
+    // use thread pool to optimize the process
     for entry in entries.iter() {
-        if entry.is_dir() {
+        let tx = tx.clone();
+        let entry = entry.clone();
+        pool.execute(move || {
+            let is_dir = entry.is_dir();
+            tx.send((entry, is_dir)).unwrap();
+        });
+
+        
+    }
+    if args.verbose {
+        let _ = multi.println(format!("Completed iterating entries: {}", folder_path));
+    }
+
+    // wait for the jobs to complete, and process the result
+    rx.iter().take(files_count).for_each(|(entry,is_dir)| {
+        if is_dir {
             folder_count += 1;
             folders.push(entry.clone());
         } else {
             file_count += 1;
         }
-    }
-    if args.verbose {
-        let _ = multi.println(format!("Completed iterating entries: {}", folder_path));
-    }
+    });
+
     bar.finish_and_clear();
     multi.remove(&bar);
 
