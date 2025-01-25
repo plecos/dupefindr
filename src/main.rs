@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, time::Duration};
@@ -37,6 +37,11 @@ struct SharedOptions {
     #[arg(short, long, default_value = "*")]
     wildcard: String,
 
+    /// wildcard pattern to exclude fo
+    /// Example: *.txt
+    #[arg(long, default_value = "")]
+    exclusion_wildcard: String,
+
     /// Recursively search for duplicates
     #[arg(short, long)]
     recursive: bool,
@@ -67,31 +72,46 @@ struct SharedOptions {
     verbose: bool,
 }
 
-#[derive(Subcommand, Debug)]
-enum Commands {
+#[derive(ValueEnum, Debug, Clone, PartialEq)]
+enum DuplicateSelectionMethod {
+    Newest,
+    Oldest,
+}
 
+#[derive(Subcommand, Debug, PartialEq)]
+enum Commands {
     #[command(name = "find", about = "Find duplicate files")]
     FindDuplicates {},
-    
+
     #[command(name = "move", about = "Move duplicate files to a new location")]
     MoveDuplicates {
         /// The directory to move to.
         #[arg(short, long)]
         location: String,
+
+        /// Method to select the file to keep
+        /// Example: newest, oldest, largest, smallest
+        #[arg(short, long, default_value = "newest")]
+        method: DuplicateSelectionMethod,
     },
     #[command(name = "copy", about = "Copy duplicate files to a new location")]
     CopyDuplicates {
         /// The directory to copy to.
         #[arg(short, long)]
         location: String,
+
+        /// Method to select the file to keep
+        #[arg(short, long, default_value = "newest")]
+        method: DuplicateSelectionMethod,
     },
     #[command(name = "delete", about = "Delete duplicate files")]
-    DeleteDuplicates {},
-
-    
+    DeleteDuplicates {
+        /// Method to select the file to keep
+        /// Example: newest, oldest, largest, smallest
+        #[arg(short, long, default_value = "newest")]
+        method: DuplicateSelectionMethod,
+    },
 }
-
-
 
 #[derive(Debug, Clone)]
 struct FileInfo {
@@ -116,21 +136,18 @@ fn main() {
 fn get_command_line_arguments() -> Args {
     let args = Args::parse();
     if args.shared.debug {
+        println!("Command: {:?}", args.command);
         println!("Searching for duplicates in: {}", args.shared.path);
         if args.shared.recursive {
             println!("Recursively searching for duplicates");
         }
-        println!(
-            "Include empty files: {}",
-            args.shared.include_empty_files
-        );
+        println!("Include empty files: {}", args.shared.include_empty_files);
         println!("Dry run: {}", args.shared.dry_run);
         println!("Include hidden files: {}", args.shared.include_hidden_files);
         println!("Verbose: {}", args.shared.verbose);
         println!("Quiet: {}", args.shared.quiet);
         println!("Wildcard: {}", args.shared.wildcard);
-        // println!("Action: {}", args.action);
-        // println!("Action location: {}", args.action_location);
+        println!("Exclusion wildcard: {}", args.shared.exclusion_wildcard);
         let default_parallelism_approx = num_cpus::get();
         println!("Available cpus: {}", default_parallelism_approx);
         println!();
@@ -155,34 +172,32 @@ fn start_search(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // identify the duplicates
-    let hash_map = identify_duplicates(args, _files);
+    let full_hash_map = identify_duplicates(args, _files);
+    let hash_map = process_duplicates(args, &full_hash_map);
 
     // print the duplicates
-    let mut duplicates_found = 0;
+    let duplicates_found = hash_map.len();
     let mut duplicates_total_size: i64 = 0;
     for (hash, files) in hash_map.iter() {
-        if files.len() > 1 {
-            duplicates_found += 1;
+        if args.shared.verbose {
+            println!("Found {} duplicates for hash: {}", files.len(), hash);
+        }
+        for file in files {
             if args.shared.verbose {
-                println!("Found {} duplicates for hash: {}", files.len(), hash);
+                println!(
+                    "File: {} [created: {}] [modified: {}] [{} bytes]",
+                    file.path,
+                    file.created_at.to_rfc2822(),
+                    file.modified_at.to_rfc2822(),
+                    bytesize::ByteSize(file.size)
+                );
             }
-            for file in files {
-                if args.shared.verbose {
-                    println!(
-                        "File: {} [created: {}] [modified: {}] [{} bytes]",
-                        file.path,
-                        file.created_at.to_rfc2822(),
-                        file.modified_at.to_rfc2822(),
-                        file.size
-                    );
-                }
-                if files.iter().position(|f| f.path == file.path).unwrap() != 0 {
-                    duplicates_total_size += file.size as i64;
-                }
+            if files.iter().position(|f| f.path == file.path).unwrap() != 0 {
+                duplicates_total_size += file.size as i64;
             }
-            if args.shared.verbose {
-                println!();
-            }
+        }
+        if args.shared.verbose {
+            println!();
         }
     }
     if duplicates_found == 0 {
@@ -373,6 +388,21 @@ fn get_files_in_directory(
                 bar2.inc(1);
                 continue;
             }
+            // determine if the file matches the exclusion wildcard
+            if args.shared.exclusion_wildcard.len() > 0 {
+                let exclusion_wildcard_pattern =
+                    glob::Pattern::new(&args.shared.exclusion_wildcard)?;
+                if exclusion_wildcard_pattern.matches_path(path) {
+                    if args.shared.verbose {
+                        let _ = multi.println(format!(
+                            "Ignoring file (matches exclusion wildcard): {}",
+                            path.to_str().unwrap()
+                        ));
+                    }
+                    bar2.inc(1);
+                    continue;
+                }
+            }
 
             let hidden: bool;
             #[cfg(not(target_os = "windows"))]
@@ -434,7 +464,13 @@ fn get_files_in_directory(
             files.push(file_info);
 
             if args.shared.debug {
-                thread::sleep(Duration::from_millis(DEBUG_DELAY));
+                let _ = multi.println(format!(
+                    "Selected File: {} [created: {}] [modified: {}] [{} bytes]",
+                    path.to_str().unwrap(),
+                    created_at_utc_datetime.to_rfc2822(),
+                    modified_at_utc_datetime.to_rfc2822(),
+                    size
+                ));
             }
             bar2.inc(1);
         }
@@ -520,6 +556,118 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
     hash_map
 }
 
+fn process_duplicates(
+    args: &Args,
+    hash_map: &HashMap<String, Vec<FileInfo>>,
+) -> HashMap<String, Vec<FileInfo>> {
+    let mut new_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
+    let workers = num_cpus::get();
+
+    let multi = MultiProgress::new();
+    let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
+        .unwrap()
+        .progress_chars("##-");
+
+    let sty_dupes =
+        ProgressStyle::with_template("ETA {eta} {bar:40.yellow/blue} {pos:>7}/{len:7} {msg}")
+            .unwrap()
+            .progress_chars("##-");
+
+    let bar = if args.shared.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new(hash_map.len() as u64))
+    };
+    bar.set_style(sty_dupes);
+    let bar2 = if args.shared.quiet {
+        ProgressBar::hidden()
+    } else {
+        multi.add(ProgressBar::new_spinner())
+    };
+    bar2.enable_steady_tick(Duration::from_millis(100));
+    bar2.set_style(sty_processing);
+    bar2.set_message("Processing duplicates...");
+
+    for (hash, files) in hash_map.iter() {
+        if files.len() > 1 {
+            new_hash_map.insert(hash.clone(), files.clone());
+            // let pool = ThreadPool::new(workers);
+            // let (tx, rx) = channel();
+            // let files_count = files.len();
+            match &args.command {
+                Commands::FindDuplicates {} => {
+                    if args.shared.debug {
+                        let _ = multi.println(format!("FindDuplicates: {}", hash));
+                    }
+                    continue;
+                }
+                Commands::CopyDuplicates { location, method } => {
+                    if args.shared.debug {
+                        let _ = multi.println(format!("CopyDuplicates: {} to {}", hash, location));
+                    }
+                    // get the list of files to copy
+                    let (keeper, selected_files): (Option<FileInfo>, Vec<FileInfo>) =
+                        select_duplicate_files(method.clone(), files);
+                    if keeper.is_none() {
+                        if args.shared.debug {
+                            let _ = multi.println("keeper is none");
+                        }
+                        continue;
+                    }
+                    if args.shared.debug {
+                        let _ = multi.println(format!("Selected File: {}", keeper.unwrap().path));
+                    }
+                    // copy the files
+                    for file in selected_files {
+                        let source = &file.path;
+                        let file_name =
+                            Path::new(&file.path).file_name().unwrap().to_str().unwrap();
+                        let destination = format!("{}/{}", location, file_name);
+
+                        if !args.shared.dry_run {
+                            if args.shared.verbose {
+                                let _ = multi
+                                    .println(format!("Copying: {} to {}", source, destination));
+                            }
+                            if let Err(e) = fs::copy(source, destination.clone()) {
+                                eprintln!("Failed to copy {} to {}: {}", source, destination, e);
+                            }
+                        } else {
+                            if args.shared.verbose {
+                                let _ = multi.println(format!(
+                                    "Dry run: Would copy {} to {}",
+                                    source, destination
+                                ));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Commands::MoveDuplicates { location, method } => {
+                    if args.shared.debug {
+                        let _ = multi.println(format!("MoveDuplicates: {} to {}", hash, location));
+                    }
+                    continue;
+                }
+                Commands::DeleteDuplicates { method } => {
+                    if args.shared.debug {
+                        let _ = multi.println(format!("DeleteDuplicates: {}", hash));
+                    }
+                    continue;
+                }
+            }
+        }
+        bar.inc(1);
+    }
+
+    bar.finish_and_clear();
+    bar2.finish_and_clear();
+    multi.remove(&bar2);
+    multi.remove(&bar);
+    multi.clear().unwrap();
+    new_hash_map
+}
+
 fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> String {
     let mut file = std::fs::File::open(file_path).unwrap();
     let mut buffer = Vec::new();
@@ -534,6 +682,31 @@ fn get_md5_hash(buffer: &Vec<u8>) -> String {
     format!("{:x}", hash)
 }
 
+fn select_duplicate_files(
+    method: DuplicateSelectionMethod,
+    files: &Vec<FileInfo>,
+) -> (Option<FileInfo>, Vec<FileInfo>) {
+    if files.is_empty() {
+        return (None, vec![]);
+    }
+    match method {
+        DuplicateSelectionMethod::Newest => {
+            // keep the newest file, so return all other files
+            let mut sorted_files = files.clone();
+            sorted_files.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+            let keeper = sorted_files.swap_remove(0);
+            (Some(keeper), sorted_files)
+        }
+        DuplicateSelectionMethod::Oldest => {
+            // keep the oldest file, so return all other files
+            let mut sorted_files = files.clone();
+            sorted_files.sort_by(|a, b| a.modified_at.cmp(&b.modified_at));
+            let keeper = sorted_files.swap_remove(0);
+            (Some(keeper), sorted_files)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,18 +715,21 @@ mod tests {
         let shared_options = SharedOptions {
             path: "data".to_string(),
             recursive: false,
-            debug: false,
+            debug: true,
             include_empty_files: false,
             dry_run: false,
             include_hidden_files: false,
-            verbose: false,
+            verbose: true,
             quiet: false,
             wildcard: "*".to_string(),
+            exclusion_wildcard: "".to_string(),
         };
         let s1 = shared_options.clone();
         let args = Args {
             shared: s1,
-            command: Commands::DeleteDuplicates {},
+            command: Commands::DeleteDuplicates {
+                method: DuplicateSelectionMethod::Newest,
+            },
         };
         args
     }
@@ -572,6 +748,15 @@ mod tests {
 
         let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
         assert_eq!(files.len(), 4);
+    }
+
+    #[test]
+    fn test_get_files_in_directory_exclusion_wildcard() {
+        let mut args = create_default_command_line_arguments();
+        args.shared.exclusion_wildcard = "*testdupe*.txt".to_string();
+
+        let files = get_files_in_directory(&args, "data".to_string(), None).unwrap();
+        assert_eq!(files.len(), 1);
     }
 
     #[test]
@@ -704,5 +889,97 @@ mod tests {
             }
         }
         assert_eq!(duplicates_found, 0);
+    }
+
+    #[test]
+    fn test_select_duplicate_files_newest() {
+
+        let mut files = Vec::new();
+        files.push(FileInfo {
+            path: "data/testdupe1.txt".to_string(),
+            size: 1024,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+        });
+        files.push(FileInfo {
+            path: "data/testdupe2.txt".to_string(),
+            size: 1024,
+            created_at: Utc::now()-chrono::Duration::days(1),
+            modified_at: Utc::now()-chrono::Duration::days(1),
+        });
+        files.push(FileInfo {
+            path: "data/testdupe3.txt".to_string(),
+            size: 1024,
+            created_at: Utc::now()-chrono::Duration::days(2),
+            modified_at: Utc::now()-chrono::Duration::days(2),
+        });
+        let (keeper, selected_files) = select_duplicate_files(
+            DuplicateSelectionMethod::Newest,
+            &files,
+        );
+        assert_eq!(keeper.is_some(),true);
+        assert_eq!(keeper.unwrap().path, "data/testdupe1.txt".to_string());
+        assert_eq!(selected_files.len(), 2);
+        // the order of the selected files is not guarenteed, so we check to see if our files are just in there somewhere
+        let file1 = selected_files.iter().find(|file| file.path == "data/testdupe3.txt");
+        let file2 = selected_files.iter().find(|file| file.path == "data/testdupe2.txt");
+
+        assert!(file1.is_some());
+        assert!(file2.is_some());
+        
+
+    }
+
+    #[test]
+    fn test_select_duplicate_files_oldest() {
+
+        let mut files = Vec::new();
+        files.push(FileInfo {
+            path: "data/testdupe1.txt".to_string(),
+            size: 1024,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+        });
+        files.push(FileInfo {
+            path: "data/testdupe2.txt".to_string(),
+            size: 1024,
+            created_at: Utc::now()-chrono::Duration::days(1),
+            modified_at: Utc::now()-chrono::Duration::days(1),
+        });
+        files.push(FileInfo {
+            path: "data/testdupe3.txt".to_string(),
+            size: 1024,
+            created_at: Utc::now()-chrono::Duration::days(2),
+            modified_at: Utc::now()-chrono::Duration::days(2),
+        });
+        let (keeper, selected_files) = select_duplicate_files(
+            DuplicateSelectionMethod::Oldest,
+            &files,
+        );
+        assert_eq!(keeper.is_some(),true);
+        assert_eq!(keeper.unwrap().path, "data/testdupe3.txt".to_string());
+        assert_eq!(selected_files.len(), 2);
+        
+        // the order of the selected files is not guarenteed, so we check to see if our files are just in there somewhere
+        let file1 = selected_files.iter().find(|file| file.path == "data/testdupe1.txt");
+        let file2 = selected_files.iter().find(|file| file.path == "data/testdupe2.txt");
+
+        assert!(file1.is_some());
+        assert!(file2.is_some());
+        
+
+    }
+
+    #[test]
+    fn test_select_duplicate_files_empty_files() {
+        let files = Vec::new();
+        let (keeper, selected_files) = select_duplicate_files(
+            DuplicateSelectionMethod::Oldest,
+            &files,
+        );
+        assert_eq!(keeper.is_none(), true);
+        assert_eq!(selected_files.len(), 0);
+
+        
     }
 }
