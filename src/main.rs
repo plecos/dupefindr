@@ -56,20 +56,23 @@
 /// * `get_md5_hash` - Get the MD5 hash of a buffer.
 /// * `select_duplicate_files` - Select the file to keep and the duplicates to process based on the selection method.
 ///
-
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::style::{Color, SetAttribute, SetForegroundColor};
+use crossterm::terminal::{self, ClearType};
+use crossterm::{cursor, execute, queue, style, ExecutableCommand};
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
-use std::io::{self, Read};
+use std::io::{self, stdout, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
+use std::time::Instant;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, time::Duration};
 use std::{fs, thread};
 use threadpool::ThreadPool;
-use std::time::Instant;
 
 static DEBUG_DELAY: u64 = 0;
 
@@ -136,10 +139,12 @@ struct SharedOptions {
 ///
 /// * `Newest` - Select the newest file to keep.
 /// * `Oldest` - Select the oldest file to keep.
+/// * `Interactive` - Prompt user to select file to keep
 #[derive(ValueEnum, Debug, Clone, PartialEq)]
 enum DuplicateSelectionMethod {
     Newest,
     Oldest,
+    Interactive,
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -210,6 +215,12 @@ struct DuplicateFileSet {
     extras: Vec<FileInfo>,
 }
 
+#[derive(Debug, Clone)]
+struct SearchResults {
+    number_duplicates: usize,
+    total_size: usize,
+}
+
 // setup dependency injection for file copy, move, and delete
 trait FileOperations {
     fn copy(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
@@ -243,33 +254,130 @@ impl FileOperations for RealFileOperations {
     }
 }
 
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        reset_terminal();
+    }
+}
+
 /// * `main` - Entry point of the program.
 #[cfg(not(tarpaulin_include))]
 fn main() {
     // Record the start time
     let start = Instant::now();
-    
+
     let args = get_command_line_arguments();
     let file_ops = RealFileOperations;
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
 
-    match start_search(&file_ops, &args) {
-        Ok(num_duplicates) => {
-             // Record the end time
-            let duration = start.elapsed();
-            println!("Elapsed time: {}",humantime::format_duration(duration));
-            std::process::exit(num_duplicates.try_into().unwrap());
+    // Create an instance of TerminalGuard
+    let _guard = TerminalGuard;
+
+    setup_ctrlc_handler(r.clone());
+
+    setup_terminal();
+
+    // Create a channel to signal the completion of the work thread
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // run start search async
+    let _search_thread = thread::spawn(move || {
+        let tx = tx.clone();
+        match start_search(&file_ops, &args) {
+            Ok(search_results) => {
+                let duration = start.elapsed();
+                println!("Elapsed time: {}", humantime::format_duration(duration));
+                if search_results.number_duplicates == 0 {
+                    println!("No duplicates found");
+                } else {
+                    println!(
+                        "Found {} set of duplicates with total size {}",
+                        search_results.number_duplicates,
+                        bytesize::ByteSize(search_results.total_size.try_into().unwrap())
+                    );
+                }
+                tx.send(search_results.number_duplicates as i64).unwrap();
+
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                tx.send(-1).unwrap();
+            }
         }
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(-1);
+    });
+
+    // wait for search_thread to complete or running to signal
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        let thread_result = rx.try_recv();
+        match thread_result {
+            Ok(num_duplicates) => std::process::exit(num_duplicates.try_into().unwrap()),
+            Err(_) => {},
         }
+        // sleep a bit
+        thread::sleep(Duration::from_millis(1000));
+        
     }
+    
 }
 
-/// Gets the command line arguments object.  Not included in testing since there are no command lines passed in 
+fn setup_ctrlc_handler(running: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    // spawn a thread that will get key events and check for ctrl-c
+    std::thread::spawn(move || -> Result<(), anyhow::Error> {
+        loop {
+            // using a 100 ms timeout to be cpu friendly
+            if event::poll(std::time::Duration::from_millis(100))? {
+                if let Event::Key(key_event) = event::read()? {
+                    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        // signal by settting our AtomicBool to false
+                        running.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn setup_terminal() {
+    let _ = terminal::enable_raw_mode();
+    let _ = execute!(stdout(), terminal::EnterAlternateScreen);
+
+    // Clear the screen
+    let _ = queue!(
+        stdout(),
+        style::ResetColor,
+        terminal::Clear(ClearType::All),
+        cursor::Hide,
+        cursor::MoveTo(0, 0)
+    );
+}
+
+fn reset_terminal() {
+    let _ = execute!(
+        stdout(),
+        style::ResetColor,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    );
+    let _ = terminal::disable_raw_mode();
+}
+
+/// Gets the command line arguments object.  Not included in testing since there are no command lines passed in
 #[cfg(not(tarpaulin_include))]
 fn get_command_line_arguments() -> Args {
-    let args = Args::parse();
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(e) => {
+            println!("{}", e);
+            //println!("Error parsing command line arguments, displayng help");
+            println!();
+            // let mut cmd = <Args as clap::CommandFactory>::command();
+            // cmd.print_help().unwrap();
+            std::process::exit(-2);
+        }
+    };
     if args.shared.debug {
         println!("Command: {:?}", args.command);
         println!("Searching for duplicates in: {}", args.shared.path);
@@ -290,7 +398,7 @@ fn get_command_line_arguments() -> Args {
 
     args
 }
-fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<usize, io::Error> {
+fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchResults, io::Error> {
     // get the files in the directory
     let folder_path: String = args.shared.path.clone();
 
@@ -308,7 +416,7 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<usize, i
 
     // identify the duplicates
     let full_hash_map = identify_duplicates(args, _files);
-    let hash_map = process_duplicates(file_ops,args, &full_hash_map);
+    let hash_map = process_duplicates(file_ops, args, &full_hash_map);
 
     // print the duplicates
     let duplicates_found = hash_map.len();
@@ -335,17 +443,13 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<usize, i
             println!();
         }
     }
-    if duplicates_found == 0 {
-        println!("No duplicates found");
-    } else {
-        println!(
-            "Found {} set of duplicates with total size {}",
-            duplicates_found,
-            bytesize::ByteSize(duplicates_total_size as u64)
-        );
-    }
+    
 
-    Ok(duplicates_found)
+    let search_results: SearchResults = SearchResults {
+        number_duplicates: duplicates_found,
+        total_size: duplicates_total_size as usize,
+    };
+    Ok(search_results)
 }
 
 fn get_files_in_directory(
@@ -363,11 +467,14 @@ fn get_files_in_directory(
         Ok(metadata) => {
             if !metadata.is_dir() {
                 eprintln!("The path provided {} is not a directory", folder_path);
-                return Err(io::Error::new(io::ErrorKind::Other, "The path provided is not a directory"));
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "The path provided is not a directory",
+                ));
             }
         }
         Err(e) => {
-            eprintln!("Error calling fs::metadata with path {}",folder_path);
+            eprintln!("Error calling fs::metadata with path {}", folder_path);
             return Err(e);
         }
     }
@@ -512,7 +619,8 @@ fn get_files_in_directory(
 
         if path.is_file() {
             // determine if the file matches the wildcard
-            let wildcard_pattern = glob::Pattern::new(&args.shared.wildcard).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let wildcard_pattern = glob::Pattern::new(&args.shared.wildcard)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             if !wildcard_pattern.matches_path(path) {
                 if args.shared.verbose {
                     let _ = multi.println(format!(
@@ -526,7 +634,8 @@ fn get_files_in_directory(
             // determine if the file matches the exclusion wildcard
             if args.shared.exclusion_wildcard.len() > 0 {
                 let exclusion_wildcard_pattern =
-                    glob::Pattern::new(&args.shared.exclusion_wildcard).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    glob::Pattern::new(&args.shared.exclusion_wildcard)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                 if exclusion_wildcard_pattern.matches_path(path) {
                     if args.shared.verbose {
                         let _ = multi.println(format!(
@@ -663,8 +772,8 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
                 Ok(hash_string) => tx.send((hash_string, file.clone())).unwrap(),
                 Err(e) => {
                     eprintln!("{}", e);
-                    return tx.send((String::new(), file.clone())).unwrap()
-                },
+                    return tx.send((String::new(), file.clone())).unwrap();
+                }
             }
         });
     }
@@ -740,6 +849,23 @@ fn process_duplicates<T: FileOperations>(
     bar2.set_style(sty_processing);
     bar2.set_message("Processing duplicates...");
 
+    // get list of files to process
+    let method = match &args.command {
+        Commands::MoveDuplicates { method, .. } => method,
+        Commands::CopyDuplicates { method, .. } => method,
+        Commands::DeleteDuplicates { method } => method,
+        Commands::FindDuplicates { method } => method,
+    };
+
+    // if the dupliate selection method is "interactive" then we need to turn off the progress bars
+    if *method == DuplicateSelectionMethod::Interactive {
+        bar.finish_and_clear();
+        bar2.finish_and_clear();
+        multi.remove(&bar2);
+        multi.remove(&bar);
+        multi.clear().unwrap();
+    }
+
     for (hash, files) in hash_map.iter() {
         if files.len() > 1 {
             new_hash_map.insert(hash.clone(), files.clone());
@@ -776,15 +902,7 @@ fn process_duplicates<T: FileOperations>(
                 }
             }
 
-            // get list of files to process
-            let method = match &args.command {
-                Commands::MoveDuplicates { method, .. } => method,
-                Commands::CopyDuplicates { method, .. } => method,
-                Commands::DeleteDuplicates { method } => method,
-                Commands::FindDuplicates { method } => method,
-            };
-
-            let dup_fileset = select_duplicate_files(method.clone(), files);
+            let dup_fileset = select_duplicate_files(method.clone(), hash, files, &bar2);
             if dup_fileset.keeper.is_none() {
                 if args.shared.debug {
                     let _ = multi.println("**************************************");
@@ -828,8 +946,8 @@ fn process_a_duplicate_file<T: FileOperations>(
     let location = match &args.command {
         Commands::MoveDuplicates { location, .. } => location,
         Commands::CopyDuplicates { location, .. } => location,
-        Commands::DeleteDuplicates { method: _} => "",
-        Commands::FindDuplicates { method: _} => "",
+        Commands::DeleteDuplicates { method: _ } => "",
+        Commands::FindDuplicates { method: _ } => "",
     };
     let destination = format!("{}/{}", location, file_name);
 
@@ -911,7 +1029,7 @@ fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> Result<String, std::
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer).unwrap();
             Ok(get_md5_hash(&buffer))
-        },
+        }
         Err(e) => {
             eprintln!("{}", format!("{:?}", e));
             Err(e)
@@ -928,7 +1046,9 @@ fn get_md5_hash(buffer: &Vec<u8>) -> String {
 
 fn select_duplicate_files(
     method: DuplicateSelectionMethod,
+    hash: &String,
     files: &Vec<FileInfo>,
+    _bar: &ProgressBar,
 ) -> DuplicateFileSet {
     let mut dup_fileset = DuplicateFileSet {
         keeper: None,
@@ -953,6 +1073,123 @@ fn select_duplicate_files(
             let keeper = sorted_files.swap_remove(0);
             dup_fileset.keeper = Some(keeper);
             dup_fileset.extras = sorted_files;
+        }
+        DuplicateSelectionMethod::Interactive => {
+            use crossterm::execute;
+            let mut selected_index = 0;
+            // let _ = terminal::enable_raw_mode();
+            // let _ = execute!(stdout(), terminal::EnterAlternateScreen);
+
+            // // Clear the screen
+            // let _ = queue!(
+            //     stdout(),
+            //     style::ResetColor,
+            //     terminal::Clear(ClearType::All),
+            //     cursor::Hide,
+            //     cursor::MoveTo(0, 0)
+            // );
+            let _ = stdout().execute(SetAttribute(style::Attribute::Bold));
+            let _ = queue!(
+                stdout(),
+                style::Print("Duplicate File Interactive Selector"),
+                cursor::MoveToNextLine(1)
+            );
+            let _ = stdout().execute(SetAttribute(style::Attribute::Reset));
+            let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
+            let _ = queue!(
+                stdout(),
+                style::Print("Move the selector up and down using the ARROW keys"),
+                cursor::MoveToNextLine(1)
+            );
+            let _ = queue!(
+                stdout(),
+                style::Print("Press SPACE to select one or more files to keep"),
+                cursor::MoveToNextLine(1)
+            );
+            let _ = queue!(
+                stdout(),
+                style::Print("Press ENTER to process the unselected duplicate files and continue"),
+                cursor::MoveToNextLine(1)
+            );
+            let _ = queue!(
+                stdout(),
+                style::Print("Press ESC to exit"),
+                cursor::MoveToNextLine(1)
+            );
+            let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
+
+            let _ = queue!(
+                stdout(),
+                style::Print(format!("For hash [{}]:", hash)),
+                cursor::MoveToNextLine(1)
+            );
+
+            loop {
+                let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
+                //let default_color = stdout().execute(Co)                // print out list of files to the user
+                for (i, item) in files.iter().enumerate() {
+                    if i == selected_index {
+                        let _ = stdout().execute(SetForegroundColor(Color::Red));
+                        let _ = queue!(
+                            stdout(),
+                            style::Print(format!("> {}", item.path)),
+                            cursor::MoveToNextLine(1)
+                        );
+                        //println!("> {}", item.path);
+                    } else {
+                        let _ = stdout().execute(SetForegroundColor(Color::White));
+                        let _ = queue!(
+                            stdout(),
+                            style::Print(format!("  {}", item.path)),
+                            cursor::MoveToNextLine(1)
+                        );
+                    }
+                }
+                let _ = stdout().flush();
+                let _ = stdout().execute(cursor::MoveToPreviousLine(
+                    (1 + files.len()).try_into().unwrap(),
+                ));
+                // get key events
+
+                if let Event::Key(KeyEvent { code, .. }) = event::read().unwrap() {
+                    match code {
+                        KeyCode::Up => {
+                            if selected_index > 0 {
+                                selected_index -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if selected_index < files.len() - 1 {
+                                selected_index += 1;
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            // select/deselect the file
+                        }
+                        KeyCode::Enter => {
+                            break;
+                        }
+                        KeyCode::Esc => {
+                            let _ = execute!(
+                                stdout(),
+                                style::ResetColor,
+                                cursor::Show,
+                                terminal::LeaveAlternateScreen
+                            );
+                            let _ = terminal::disable_raw_mode();
+                            return dup_fileset;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // let _ = execute!(
+            //     stdout(),
+            //     style::ResetColor,
+            //     cursor::Show,
+            //     terminal::LeaveAlternateScreen
+            // );
+            // let _ = terminal::disable_raw_mode();
         }
     }
     dup_fileset
@@ -1122,14 +1359,18 @@ mod tests {
     fn test_get_files_in_directory_notafolder() {
         let args = create_default_command_line_arguments();
 
-        let result = get_files_in_directory(&args, format!("{}/testnodupe.txt",args.shared.path), None);
+        let result =
+            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_hash_of_file() {
         let args = create_default_command_line_arguments();
-        let hash = get_hash_of_file(&format!("{}//testdupe1.txt", args.shared.path.clone()), &ProgressBar::new_spinner());
+        let hash = get_hash_of_file(
+            &format!("{}//testdupe1.txt", args.shared.path.clone()),
+            &ProgressBar::new_spinner(),
+        );
         assert!(hash.is_ok());
         assert_eq!(hash.unwrap(), "8c91214730e59f67bd46d1855156e762");
     }
@@ -1137,7 +1378,10 @@ mod tests {
     #[test]
     fn test_get_hash_of_file_bad_path() {
         let args = create_default_command_line_arguments();
-        let hash = get_hash_of_file(&format!("{}//testdupe1-notfound.txt", args.shared.path.clone()), &ProgressBar::new_spinner());
+        let hash = get_hash_of_file(
+            &format!("{}//testdupe1-notfound.txt", args.shared.path.clone()),
+            &ProgressBar::new_spinner(),
+        );
         assert!(hash.is_err());
     }
 
@@ -1166,7 +1410,7 @@ mod tests {
     #[test]
     fn test_start_search_quiet() {
         let mut args = create_default_command_line_arguments();
-        args.shared.quiet =true;
+        args.shared.quiet = true;
         let file_ops = RealFileOperations;
         let result = start_search(&file_ops, &args);
         assert!(result.is_ok());
@@ -1234,7 +1478,7 @@ mod tests {
             method: DuplicateSelectionMethod::Newest,
         };
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops,&args);
+        let result = start_search(&file_ops, &args);
 
         assert!(result.is_ok());
     }
@@ -1333,7 +1577,13 @@ mod tests {
             created_at: Utc::now() - chrono::Duration::days(2),
             modified_at: Utc::now() - chrono::Duration::days(2),
         });
-        let dup_fileset = select_duplicate_files(DuplicateSelectionMethod::Newest, &files);
+        let bar = ProgressBar::new_spinner();
+        let dup_fileset = select_duplicate_files(
+            DuplicateSelectionMethod::Newest,
+            &"testhash".to_owned(),
+            &files,
+            &bar,
+        );
         assert_eq!(dup_fileset.keeper.is_some(), true);
         assert_eq!(
             dup_fileset.keeper.unwrap().path,
@@ -1359,7 +1609,6 @@ mod tests {
         let args = create_default_command_line_arguments();
         let mut files = Vec::new();
         files.push(FileInfo {
-            
             path: format!("{}//testdupe1.txt", args.shared.path.clone()),
             size: 1024,
             created_at: Utc::now(),
@@ -1377,7 +1626,13 @@ mod tests {
             created_at: Utc::now() - chrono::Duration::days(2),
             modified_at: Utc::now() - chrono::Duration::days(2),
         });
-        let dup_fileset = select_duplicate_files(DuplicateSelectionMethod::Oldest, &files);
+        let bar = ProgressBar::new_spinner();
+        let dup_fileset = select_duplicate_files(
+            DuplicateSelectionMethod::Oldest,
+            &"testhash".to_owned(),
+            &files,
+            &bar,
+        );
         assert_eq!(dup_fileset.keeper.is_some(), true);
         assert_eq!(
             dup_fileset.keeper.unwrap().path,
@@ -1389,11 +1644,11 @@ mod tests {
         let file1 = dup_fileset
             .extras
             .iter()
-            .find(|file| file.path == format!("{}//testdupe1.txt", args.shared.path.clone()),);
+            .find(|file| file.path == format!("{}//testdupe1.txt", args.shared.path.clone()));
         let file2 = dup_fileset
             .extras
             .iter()
-            .find(|file| file.path == format!("{}//testdupe2.txt", args.shared.path.clone()),);
+            .find(|file| file.path == format!("{}//testdupe2.txt", args.shared.path.clone()));
 
         assert!(file1.is_some());
         assert!(file2.is_some());
@@ -1402,7 +1657,13 @@ mod tests {
     #[test]
     fn test_select_duplicate_files_empty_files() {
         let files = Vec::new();
-        let dup_fileset = select_duplicate_files(DuplicateSelectionMethod::Oldest, &files);
+        let bar = ProgressBar::new_spinner();
+        let dup_fileset = select_duplicate_files(
+            DuplicateSelectionMethod::Oldest,
+            &"testhash".to_owned(),
+            &files,
+            &bar,
+        );
         assert_eq!(dup_fileset.keeper.is_none(), true);
         assert_eq!(dup_fileset.extras.len(), 0);
     }
@@ -1620,12 +1881,11 @@ mod tests {
             modified_at: Utc::now(),
         });
         hash_map.insert("testhashkey".to_owned(), files);
-        
+
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
         let result = process_duplicates(&file_ops, &args, &hash_map);
         println!("{:?}", result);
         assert_eq!(result.contains_key("testhashkey"), true);
-
     }
 }
