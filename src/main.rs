@@ -68,6 +68,7 @@ use md5::{self, Digest};
 use std::io::{self, stdout, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
+use std::thread::yield_now;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, time::Duration};
@@ -262,79 +263,166 @@ impl Drop for TerminalGuard {
     }
 }
 
+macro_rules! myprintln {
+    () => {{
+        let _ = execute!(
+            stdout(),
+            cursor::MoveToNextLine(1),
+        );
+        io::stdout().flush().unwrap();
+    }};
+    ($($arg:tt)*) => {{
+        let formatted_string = format!($($arg)*);
+        let _ = execute!(
+            stdout(),
+            style::Print(&formatted_string),
+            cursor::MoveToNextLine(1),
+        );
+        io::stdout().flush().unwrap();
+    }};
+}
+
+macro_rules! myeprintln {
+    () => {{
+        let _ = execute!(
+            stdout(),
+            cursor::MoveToNextLine(1),
+        );
+        io::stdout().flush().unwrap();
+    }};
+    ($($arg:tt)*) => {{
+        let formatted_string = format!($($arg)*);
+        let _ = execute!(
+            stdout(),
+            style::SetForegroundColor(Color::Red),
+            style::Print(&formatted_string),
+            style::ResetColor,
+            cursor::MoveToNextLine(1),
+        );
+        io::stdout().flush().unwrap();
+    }};
+}
+
 /// * `main` - Entry point of the program.
 #[cfg(not(tarpaulin_include))]
 fn main() {
     // Record the start time
     let start = Instant::now();
 
-    let args = get_command_line_arguments();
     let file_ops = RealFileOperations;
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = running.clone();
 
-    // Create an instance of TerminalGuard
+    // Create an instance of TerminalGuard that will be dropped when main exits
     let _guard = TerminalGuard;
-
-    setup_ctrlc_handler(r.clone());
 
     setup_terminal();
 
+    print_banner();
+
+    let args = get_command_line_arguments();
+
+    setup_ctrlc_handler(args.shared.debug, r.clone());
+
     // Create a channel to signal the completion of the work thread
-    let (tx, rx) = std::sync::mpsc::channel();
+    //let (tx, rx) = std::sync::mpsc::channel();
 
     // run start search async
-    let _search_thread = thread::spawn(move || {
-        let tx = tx.clone();
-        match start_search(&file_ops, &args) {
-            Ok(search_results) => {
-                let duration = start.elapsed();
-                println!("Elapsed time: {}", humantime::format_duration(duration));
-                if search_results.number_duplicates == 0 {
-                    println!("No duplicates found");
-                } else {
-                    println!(
-                        "Found {} set of duplicates with total size {}",
-                        search_results.number_duplicates,
-                        bytesize::ByteSize(search_results.total_size.try_into().unwrap())
-                    );
-                }
-                tx.send(search_results.number_duplicates as i64).unwrap();
+    // let _search_thread = thread::spawn(move || {
+    //     let tx = tx.clone();
+    //     match start_search(&file_ops, &args, r) {
+    //         Ok(search_results) => {
+    //             let duration = start.elapsed();
+    //             myprintln!("Elapsed time: {}", humantime::format_duration(duration));
+    //             if search_results.number_duplicates == 0 {
+    //                 myprintln!("No duplicates found");
+    //             } else {
+    //                 myprintln!(
+    //                     "Found {} set of duplicates with total size {}",
+    //                     search_results.number_duplicates,
+    //                     bytesize::ByteSize(search_results.total_size.try_into().unwrap())
+    //                 );
+    //             }
+    //             tx.send(search_results.number_duplicates as i64).unwrap();
+    //         }
+    //         Err(e) => {
+    //             myeprintln!("Error: {}", e);
+    //             tx.send(-1).unwrap();
+    //         }
+    //     }
+    // });
 
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                tx.send(-1).unwrap();
-            }
-        }
-    });
+    // // wait for search_thread to complete or running to signal
+    // while running.load(std::sync::atomic::Ordering::SeqCst) {
+    //     let thread_result = rx.try_recv();
+    //     match thread_result {
+    //         Ok(num_duplicates) => std::process::exit(num_duplicates.try_into().unwrap()),
+    //         Err(_) => {
+    //             reset_terminal();
+    //         }
+    //     }
+    //     // sleep a bit
+    //     thread::sleep(Duration::from_millis(1000));
+    // }
 
-    // wait for search_thread to complete or running to signal
-    while running.load(std::sync::atomic::Ordering::SeqCst) {
-        let thread_result = rx.try_recv();
-        match thread_result {
-            Ok(num_duplicates) => std::process::exit(num_duplicates.try_into().unwrap()),
-            Err(_) => {},
+    match start_search(&file_ops, &args, r) {
+        Ok(search_results) => {
+            let duration = start.elapsed();
+            myprintln!("Elapsed time: {}", humantime::format_duration(duration));
+            if search_results.number_duplicates == 0 {
+                myprintln!("No duplicates found");
+            } else {
+                myprintln!(
+                    "Found {} set of duplicates with total size {}",
+                    search_results.number_duplicates,
+                    bytesize::ByteSize(search_results.total_size.try_into().unwrap())
+                );
+            }
+            reset_terminal();
+            std::process::exit(search_results.number_duplicates.try_into().unwrap());
+            
         }
-        // sleep a bit
-        thread::sleep(Duration::from_millis(1000));
-        
+        Err(e) => {
+            myeprintln!("Error: {}", e);
+            reset_terminal();
+            std::process::exit(-1)
+        }
     }
-    
 }
 
-fn setup_ctrlc_handler(running: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+fn print_banner() {
+    let _ = stdout().execute(SetAttribute(style::Attribute::Bold));
+    let _ = queue!(
+        stdout(),
+        style::Print("dupefindr"),
+        cursor::MoveToNextLine(2)
+    );
+    let _ = stdout().execute(SetAttribute(style::Attribute::Reset));
+    let _ = stdout().flush();
+}
+
+fn setup_ctrlc_handler(debug: bool, running: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     // spawn a thread that will get key events and check for ctrl-c
     std::thread::spawn(move || -> Result<(), anyhow::Error> {
         loop {
             // using a 100 ms timeout to be cpu friendly
-            if event::poll(std::time::Duration::from_millis(100))? {
+            if event::poll(std::time::Duration::from_millis(10))? {
                 if let Event::Key(key_event) = event::read()? {
-                    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    myprintln!("Key event: {:?}", key_event);
+                    if key_event.code == KeyCode::Char('c')
+                        && key_event
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
                         // signal by settting our AtomicBool to false
                         running.store(false, std::sync::atomic::Ordering::SeqCst);
+                        if debug {
+                            myprintln!("CTRL-C detected");
+                        }
                     }
                 }
+            } else {
+                yield_now();
             }
         }
     });
@@ -342,10 +430,10 @@ fn setup_ctrlc_handler(running: std::sync::Arc<std::sync::atomic::AtomicBool>) {
 
 fn setup_terminal() {
     let _ = terminal::enable_raw_mode();
-    let _ = execute!(stdout(), terminal::EnterAlternateScreen);
+    //let _ = execute!(stdout(), terminal::EnterAlternateScreen);
 
     // Clear the screen
-    let _ = queue!(
+    let _ = execute!(
         stdout(),
         style::ResetColor,
         terminal::Clear(ClearType::All),
@@ -355,11 +443,12 @@ fn setup_terminal() {
 }
 
 fn reset_terminal() {
+    io::stdout().flush().unwrap();
     let _ = execute!(
         stdout(),
         style::ResetColor,
         cursor::Show,
-        terminal::LeaveAlternateScreen
+        //terminal::LeaveAlternateScreen
     );
     let _ = terminal::disable_raw_mode();
 }
@@ -370,64 +459,96 @@ fn get_command_line_arguments() -> Args {
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(e) => {
-            println!("{}", e);
+            myprintln!("{}", e);
             //println!("Error parsing command line arguments, displayng help");
-            println!();
+            myprintln!();
             // let mut cmd = <Args as clap::CommandFactory>::command();
             // cmd.print_help().unwrap();
             std::process::exit(-2);
         }
     };
     if args.shared.debug {
-        println!("Command: {:?}", args.command);
-        println!("Searching for duplicates in: {}", args.shared.path);
-        if args.shared.recursive {
-            println!("Recursively searching for duplicates");
-        }
-        println!("Include empty files: {}", args.shared.include_empty_files);
-        println!("Dry run: {}", args.shared.dry_run);
-        println!("Include hidden files: {}", args.shared.include_hidden_files);
-        println!("Verbose: {}", args.shared.verbose);
-        println!("Quiet: {}", args.shared.quiet);
-        println!("Wildcard: {}", args.shared.wildcard);
-        println!("Exclusion wildcard: {}", args.shared.exclusion_wildcard);
         let default_parallelism_approx = num_cpus::get();
-        println!("Available cpus: {}", default_parallelism_approx);
-        println!();
+        let _ = queue!(
+            stdout(),
+            style::Print(format!("Command: {:?}", args.command)),
+            cursor::MoveToNextLine(1),
+            style::Print(format!("Searching for duplicates in: {}", args.shared.path)),
+            cursor::MoveToNextLine(1),
+            style::Print(format!(
+                "Recursively searching for duplicates: {}",
+                args.shared.recursive
+            )),
+            cursor::MoveToNextLine(1),
+            style::Print(format!(
+                "Include empty files: {}",
+                args.shared.include_empty_files
+            )),
+            cursor::MoveToNextLine(1),
+            style::Print(format!("Dry run: {}", args.shared.dry_run)),
+            cursor::MoveToNextLine(1),
+            style::Print(format!(
+                "Include hidden files: {}",
+                args.shared.include_hidden_files
+            )),
+            cursor::MoveToNextLine(1),
+            style::Print(format!("Verbose: {}", args.shared.verbose)),
+            cursor::MoveToNextLine(1),
+            style::Print(format!("Quiet: {}", args.shared.quiet)),
+            cursor::MoveToNextLine(1),
+            style::Print(format!("Wildcard: {}", args.shared.wildcard)),
+            cursor::MoveToNextLine(1),
+            style::Print(format!(
+                "Exclusion wildcard: {}",
+                args.shared.exclusion_wildcard
+            )),
+            cursor::MoveToNextLine(1),
+            style::Print(format!("Available cpus: {}", default_parallelism_approx)),
+            cursor::MoveToNextLine(2),
+        );
+        let _ = stdout().flush();
     }
 
     args
 }
-fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchResults, io::Error> {
+fn start_search<T: FileOperations>(
+    file_ops: &T,
+    args: &Args,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<SearchResults, io::Error> {
     // get the files in the directory
     let folder_path: String = args.shared.path.clone();
+    let r1 = running.clone();
+    let r2 = running.clone();
+    let r3 = running.clone();
 
-    let _result = get_files_in_directory(args, folder_path, None);
+    let _result = get_files_in_directory(args, folder_path, None, r1);
     let _files = match _result {
         Ok(files) => files,
         Err(e) => {
-            println!("Error: {}", e);
+            myprintln!("Error: {}", e);
             return Err(e);
         }
     };
     if args.shared.verbose {
-        println!("Found {} files", _files.len());
+        myprintln!("Found {} files", _files.len());
     }
 
+    
     // identify the duplicates
-    let full_hash_map = identify_duplicates(args, _files);
-    let hash_map = process_duplicates(file_ops, args, &full_hash_map);
+    let full_hash_map = identify_duplicates(args, _files, r2);
+    let hash_map = process_duplicates(file_ops, args, &full_hash_map, r3);
 
     // print the duplicates
     let duplicates_found = hash_map.len();
     let mut duplicates_total_size: i64 = 0;
     for (hash, files) in hash_map.iter() {
         if args.shared.verbose {
-            println!("Found {} duplicates for hash: {}", files.len(), hash);
+            myprintln!("Found {} duplicates for hash: {}", files.len(), hash);
         }
         for file in files {
             if args.shared.verbose {
-                println!(
+                myprintln!(
                     "File: {} [created: {}] [modified: {}] [{} bytes]",
                     file.path,
                     file.created_at.to_rfc2822(),
@@ -440,10 +561,9 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
             }
         }
         if args.shared.verbose {
-            println!();
+            myprintln!();
         }
     }
-    
 
     let search_results: SearchResults = SearchResults {
         number_duplicates: duplicates_found,
@@ -456,17 +576,19 @@ fn get_files_in_directory(
     args: &Args,
     folder_path: String,
     multi: Option<&MultiProgress>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<FileInfo>, io::Error> {
     let multi = match multi {
         Some(m) => m,
         None => &MultiProgress::new(),
     };
     let mut files: Vec<FileInfo> = Vec::new();
+    let running2 = running.clone();
     //let dir_path = std::path::Path::new(folder_path.as_str());
     match fs::metadata(folder_path.as_str()) {
         Ok(metadata) => {
             if !metadata.is_dir() {
-                eprintln!("The path provided {} is not a directory", folder_path);
+                myeprintln!("The path provided {} is not a directory", folder_path);
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "The path provided is not a directory",
@@ -474,7 +596,7 @@ fn get_files_in_directory(
             }
         }
         Err(e) => {
-            eprintln!("Error calling fs::metadata with path {}", folder_path);
+            myeprintln!("Error calling fs::metadata with path {}", folder_path);
             return Err(e);
         }
     }
@@ -536,17 +658,38 @@ fn get_files_in_directory(
     }
 
     // wait for the jobs to complete, and process the result
-    rx.iter().take(files_count).for_each(|(entry, is_dir)| {
-        if is_dir {
-            folder_count += 1;
-            folders.push(entry.clone());
-        } else {
-            file_count += 1;
+    let mut processed = 0;
+    while processed < files_count {
+        match rx.try_recv() {
+            Ok((entry, is_dir)) => {
+                if is_dir {
+                    folder_count += 1;
+                    folders.push(entry.clone());
+                } else {
+                    file_count += 1;
+                }
+                processed += 1;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // No message available, yield to other threads
+                thread::yield_now();
+                continue;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                break;
+            }
         }
-    });
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+    }
 
     bar.finish_and_clear();
     multi.remove(&bar);
+
+    if !running.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(files);
+    }
 
     let bar2 = if args.shared.quiet {
         ProgressBar::hidden()
@@ -596,9 +739,9 @@ fn get_files_in_directory(
             }
         } else {
             let path = fld.as_path();
-
+            
             let sub_files =
-                get_files_in_directory(args, path.to_str().unwrap().to_string(), Some(multi))?;
+                get_files_in_directory(args, path.to_str().unwrap().to_string(), Some(multi), running2.clone())?;
             files.extend(sub_files);
         }
         bar2.inc(1);
@@ -724,7 +867,11 @@ fn get_files_in_directory(
     Ok(files)
 }
 
-fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec<FileInfo>> {
+fn identify_duplicates(
+    args: &Args,
+    files: Vec<FileInfo>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     let multi = MultiProgress::new();
     let workers = num_cpus::get();
@@ -771,7 +918,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
             match hash_result {
                 Ok(hash_string) => tx.send((hash_string, file.clone())).unwrap(),
                 Err(e) => {
-                    eprintln!("{}", e);
+                    myeprintln!("{}", e);
                     return tx.send((String::new(), file.clone())).unwrap();
                 }
             }
@@ -820,6 +967,7 @@ fn process_duplicates<T: FileOperations>(
     file_ops: &T,
     args: &Args,
     hash_map: &HashMap<String, Vec<FileInfo>>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> HashMap<String, Vec<FileInfo>> {
     let mut new_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     //let workers = num_cpus::get();
@@ -867,6 +1015,9 @@ fn process_duplicates<T: FileOperations>(
     }
 
     for (hash, files) in hash_map.iter() {
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         if files.len() > 1 {
             new_hash_map.insert(hash.clone(), files.clone());
             // let pool = ThreadPool::new(workers);
@@ -1031,7 +1182,7 @@ fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> Result<String, std::
             Ok(get_md5_hash(&buffer))
         }
         Err(e) => {
-            eprintln!("{}", format!("{:?}", e));
+            myeprintln!("{}", format!("{:?}", e));
             Err(e)
         }
     }
@@ -1403,7 +1554,8 @@ mod tests {
     fn test_start_search() {
         let args = create_default_command_line_arguments();
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let result = start_search(&file_ops, &args, running);
         assert!(result.is_ok());
     }
 
@@ -1412,7 +1564,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let result = start_search(&file_ops, &args, running);
         assert!(result.is_ok());
     }
 
@@ -1425,8 +1578,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
         println!("Temporary location : {}", temp_path);
-
-        args.command = Commands::CopyDuplicates {
+        let running = args.command = Commands::CopyDuplicates {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
         };
