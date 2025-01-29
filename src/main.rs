@@ -324,47 +324,6 @@ fn main() {
 
     setup_ctrlc_handler(args.shared.debug, r.clone());
 
-    // Create a channel to signal the completion of the work thread
-    //let (tx, rx) = std::sync::mpsc::channel();
-
-    // run start search async
-    // let _search_thread = thread::spawn(move || {
-    //     let tx = tx.clone();
-    //     match start_search(&file_ops, &args, r) {
-    //         Ok(search_results) => {
-    //             let duration = start.elapsed();
-    //             myprintln!("Elapsed time: {}", humantime::format_duration(duration));
-    //             if search_results.number_duplicates == 0 {
-    //                 myprintln!("No duplicates found");
-    //             } else {
-    //                 myprintln!(
-    //                     "Found {} set of duplicates with total size {}",
-    //                     search_results.number_duplicates,
-    //                     bytesize::ByteSize(search_results.total_size.try_into().unwrap())
-    //                 );
-    //             }
-    //             tx.send(search_results.number_duplicates as i64).unwrap();
-    //         }
-    //         Err(e) => {
-    //             myeprintln!("Error: {}", e);
-    //             tx.send(-1).unwrap();
-    //         }
-    //     }
-    // });
-
-    // // wait for search_thread to complete or running to signal
-    // while running.load(std::sync::atomic::Ordering::SeqCst) {
-    //     let thread_result = rx.try_recv();
-    //     match thread_result {
-    //         Ok(num_duplicates) => std::process::exit(num_duplicates.try_into().unwrap()),
-    //         Err(_) => {
-    //             reset_terminal();
-    //         }
-    //     }
-    //     // sleep a bit
-    //     thread::sleep(Duration::from_millis(1000));
-    // }
-
     match start_search(&file_ops, &args, r) {
         Ok(search_results) => {
             let duration = start.elapsed();
@@ -1420,7 +1379,9 @@ mod tests {
     #[test]
     fn test_get_files_in_directory() {
         let args = create_default_command_line_arguments();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
         assert_eq!(files.len(), 5);
     }
 
@@ -1428,7 +1389,9 @@ mod tests {
     fn test_get_files_in_directory_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r ).unwrap();
         assert_eq!(files.len(), 5);
     }
 
@@ -1436,8 +1399,9 @@ mod tests {
     fn test_get_files_in_directory_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.wildcard = "*testdupe*.txt".to_string();
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
         assert_eq!(files.len(), 4);
     }
 
@@ -1445,8 +1409,9 @@ mod tests {
     fn test_get_files_in_directory_exclusion_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.exclusion_wildcard = "*testdupe*.txt".to_string();
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r).unwrap();
         assert_eq!(files.len(), 1);
     }
 
@@ -1454,8 +1419,9 @@ mod tests {
     fn test_get_files_in_directory_include_empty() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_empty_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
         assert_eq!(files.len(), 7);
     }
 
@@ -1463,8 +1429,9 @@ mod tests {
     fn test_get_files_in_directory_include_hidden() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r).unwrap();
         assert_eq!(files.len(), 6);
     }
 
@@ -1473,8 +1440,9 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
         args.shared.include_empty_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r).unwrap();
         assert_eq!(files.len(), 8);
     }
 
@@ -1482,8 +1450,9 @@ mod tests {
     fn test_get_files_in_directory_include_recursive() {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r ).unwrap();
         assert_eq!(files.len(), 16);
     }
 
@@ -1492,8 +1461,9 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
         args.shared.include_hidden_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r).unwrap();
         assert_eq!(files.len(), 19);
     }
 
@@ -1501,17 +1471,19 @@ mod tests {
     fn test_get_files_in_directory_bad_path() {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "badpath!!!".to_string();
-
-        let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let result = get_files_in_directory(&args, "badpath!!!".to_string(), None,r);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_files_in_directory_notafolder() {
         let args = create_default_command_line_arguments();
-
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
         let result =
-            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), None);
+            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), None,r);
         assert!(result.is_err());
     }
 
@@ -1578,12 +1550,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
         println!("Temporary location : {}", temp_path);
-        let running = args.command = Commands::CopyDuplicates {
-            location: temp_path,
-            method: DuplicateSelectionMethod::Newest,
-        };
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args);
+        let result = start_search(&file_ops, &args,r);
         assert!(result.is_err());
     }
 
@@ -1594,6 +1564,8 @@ mod tests {
         args.shared.dry_run = true;
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
         println!("Temporary location : {}", temp_path);
 
         args.command = Commands::CopyDuplicates {
@@ -1601,7 +1573,7 @@ mod tests {
             method: DuplicateSelectionMethod::Newest,
         };
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args);
+        let result = start_search(&file_ops, &args,r);
 
         assert!(result.is_ok());
     }
@@ -1611,7 +1583,9 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "data-badpath!!!".to_string();
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let result = start_search(&file_ops, &args,r);
         assert!(result.is_err());
     }
 
@@ -1623,6 +1597,8 @@ mod tests {
         args.shared.wildcard = "testnodupe.txt".to_owned();
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
         println!("Temporary location : {}", temp_path);
 
         args.command = Commands::CopyDuplicates {
@@ -1630,7 +1606,7 @@ mod tests {
             method: DuplicateSelectionMethod::Newest,
         };
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args);
+        let result = start_search(&file_ops, &args,r);
 
         assert!(result.is_ok());
     }
@@ -1638,9 +1614,12 @@ mod tests {
     #[test]
     fn test_identify_duplicates() {
         let args = create_default_command_line_arguments();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r1 = running.clone();
+        let r2 = running.clone();
 
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-        let hash_map = identify_duplicates(&args, files);
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r1).unwrap();
+        let hash_map = identify_duplicates(&args, files, r2);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1655,9 +1634,12 @@ mod tests {
     fn test_identify_duplicates_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r1 = running.clone();
+        let r2 = running.clone();
 
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-        let hash_map = identify_duplicates(&args, files);
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None,r1).unwrap();
+        let hash_map = identify_duplicates(&args, files,r2);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1671,9 +1653,12 @@ mod tests {
     #[test]
     fn test_identify_duplicates_no_files() {
         let args = create_default_command_line_arguments();
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        
 
         let files = Vec::new();
-        let hash_map = identify_duplicates(&args, files);
+        let hash_map = identify_duplicates(&args, files, r);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1687,7 +1672,8 @@ mod tests {
     #[test]
     fn test_identify_duplicates_badfiles() {
         let args = create_default_command_line_arguments();
-
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
         let mut files = Vec::new();
         let file = FileInfo {
             path: "todo!()".to_owned(),
@@ -1696,7 +1682,7 @@ mod tests {
             modified_at: Utc::now(),
         };
         files.push(file);
-        let hash_map = identify_duplicates(&args, files);
+        let hash_map = identify_duplicates(&args, files,r);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -2016,6 +2002,9 @@ mod tests {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
         };
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        
         // create a fake hash map
         let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
         // fake files
@@ -2036,7 +2025,7 @@ mod tests {
 
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_duplicates(&file_ops, &args, &hash_map);
+        let result = process_duplicates(&file_ops, &args, &hash_map, r);
         println!("{:?}", result);
         assert_eq!(result.contains_key("testhashkey"), true);
     }
