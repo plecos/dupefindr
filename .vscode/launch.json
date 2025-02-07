@@ -19,7 +19,6 @@
                     "kind": "bin"
                 }
             },
-            // cargo run -- -p /Volumes/Photos --dry-run --debug copy -l /tmp
             "args": ["-p","/Volumes/Photos","-r","--dry-run","copy","-l","/tmp"],
             "cwd": "${workspaceFolder}"
         },
@@ -39,7 +38,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["-p /Volumes/Photos","--dry-run","copy","-l /tmp","--method interactive"],
+            "args": ["-p","/Volumes/Photos","--dry-run","copy","-l","/tmp","--method","interactive"],
             "cwd": "${workspaceFolder}",
             "stopOnEntry": false,
             "preLaunchTask": "cargo build",

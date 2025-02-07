@@ -1433,7 +1433,6 @@ mod tests {
             quiet: false,
             wildcard: "*".to_string(),
             exclusion_wildcard: "".to_string(),
-            testing: false,
         };
         let s1 = shared_options.clone();
         let args = Args {
