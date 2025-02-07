@@ -48,6 +48,11 @@ If you haven't installed Rust before, please install the Rust Development Enviro
 
 [Install Rust](https://www.rust-lang.org/tools/install)
 
+If you see errors during build referring to "linker cc not found", you probably need to install build tools
+for your OS.  
+
+[For more information](https://achmadhadikurnia.com/blog/how-to-fix-error-linker-cc-not-found-when-compiling-a-rust-application)
+
 ### Release
 
 To build the production release:
