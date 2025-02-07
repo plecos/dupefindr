@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["-p","/Volumes/Photos","-r","--dry-run","copy","-l","/tmp"],
+            "args": [],
             "cwd": "${workspaceFolder}"
         },
         {
