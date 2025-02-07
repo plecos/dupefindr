@@ -1,0 +1,48 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'dupefindr'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=dupefindr",
+                    "--package=dupefindr"
+                ],
+                "filter": {
+                    "name": "dupefindr",
+                    "kind": "bin"
+                }
+            },
+            "args": ["-p","/Volumes/Photos","-r","--dry-run","copy","-l","/tmp"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'dupefindr'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=dupefindr",
+                    "--package=dupefindr"
+                ],
+                "filter": {
+                    "name": "dupefindr",
+                    "kind": "bin"
+                }
+            },
+            "args": ["-p","/Volumes/Photos","--dry-run","copy","-l","/tmp","--method","interactive"],
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "preLaunchTask": "cargo build",
+            "sourceLanguages": ["rust"]
+        }
+    ]
+}
