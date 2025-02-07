@@ -596,19 +596,23 @@ fn get_files_in_directory(
 
     // process directories first
     //let bar = multi.add(ProgressBar::new_spinner());
+
+    // only add a spinner if the multi is empty
     let bar = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
     } else {
-        multi.add_with_location(
-            progressbar::ProgressBar::new_spinner()
-                .with_message("Processing files...")
-                .with_start_spinner(),
-            AddLocation::Bottom,
-        )
+        if multi.get_progress_bars_count() == 0 {
+            multi.add_with_location(
+                progressbar::ProgressBar::new_spinner().with_message("Processing files..."),
+                AddLocation::Bottom,
+            )
+        } else {
+            multi.add(progressbar::ProgressBar::hidden())
+        }
     };
     multi.draw_all();
-    //bar.set_style(sty_processing);
-    //bar.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
+    bar.start_spinner(); //bar.set_style(sty_processing);
+                         //bar.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
 
     let mut folder_count = 0;
     let mut file_count = 0;
@@ -668,8 +672,8 @@ fn get_files_in_directory(
     //let loop_duration = loop_start.elapsed();
     //myprintln!("Loop execution time: {:?}", loop_duration);
 
-    bar.finish();
-    multi.remove(&bar);
+    //bar.finish();
+    //multi.remove(&bar);
 
     if !running.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(files);
@@ -860,6 +864,8 @@ fn get_files_in_directory(
         bar2.finish();
         multi.remove(&bar2);
     }
+    bar.finish();
+    multi.remove(&bar);
     Ok(files)
 }
 
@@ -869,7 +875,7 @@ fn identify_duplicates(
     _running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
-    let mut multi = progressbar::MultiProgress::new();
+    let multi = progressbar::MultiProgress::new();
     let workers = num_cpus::get();
 
     // let sty_dupes =
@@ -880,6 +886,16 @@ fn identify_duplicates(
     //     .unwrap()
     //     .progress_chars("##-");
 
+    let bar2 = if args.shared.quiet {
+        multi.add(progressbar::ProgressBar::hidden())
+    } else {
+        multi.add_with_location(
+            progressbar::ProgressBar::new_spinner().with_message("Identifying duplicates..."),
+            AddLocation::Bottom,
+        )
+        //multi.add(progressbar::ProgressBar::hidden())
+    };
+
     let bar = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
     } else {
@@ -889,16 +905,9 @@ fn identify_duplicates(
     };
     //bar.set_style(sty_dupes);
 
-    let bar2 = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
-    } else {
-        multi.add_with_location(
-            progressbar::ProgressBar::new_spinner()
-                .with_message("Identifying duplicates...")
-                .with_start_spinner(),
-            AddLocation::Top,
-        )
-    };
+    multi.draw_all();
+    bar2.start_spinner();
+    //multi.println("Identifying duplicates...");
     //bar2.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
     //bar2.set_style(sty_processing);
 
@@ -954,7 +963,7 @@ fn identify_duplicates(
             let vec = hash_map.get_mut(&hash_string).unwrap();
             vec.push(file);
         }
-        bar.increment(1);
+        multi.increment(&bar, 1);
     });
 
     let _ = bar.finish();
@@ -986,6 +995,15 @@ fn process_duplicates<T: FileOperations>(
     //         .unwrap()
     //         .progress_chars("##-");
 
+    let bar2 = if args.shared.quiet {
+        multi.add(progressbar::ProgressBar::hidden())
+    } else {
+        multi.add_with_location(
+            progressbar::ProgressBar::new_spinner().with_message("Processing duplicates..."),
+            AddLocation::Bottom,
+        )
+    };
+
     let bar = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
     } else {
@@ -993,15 +1011,11 @@ fn process_duplicates<T: FileOperations>(
             hash_map.len().try_into().unwrap(),
         ))
     };
+
+    multi.draw_all();
+    bar2.start_spinner();
     //bar.set_style(sty_dupes);
-    let bar2 = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
-    } else {
-        multi.add_with_location(
-            progressbar::ProgressBar::new_spinner().with_message("Processing duplicates..."),
-            AddLocation::Top,
-        )
-    };
+
     //bar2.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
     //bar2.set_style(sty_processing);
 

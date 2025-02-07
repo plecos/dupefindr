@@ -1,5 +1,5 @@
 use crossterm::cursor::{
-    MoveDown, MoveLeft, MoveToNextLine, MoveToPreviousLine, MoveUp, RestorePosition, SavePosition,
+    MoveDown, MoveLeft, MoveToNextLine, RestorePosition, SavePosition,
 };
 use crossterm::queue;
 use crossterm::style::Print;
@@ -9,9 +9,7 @@ use crossterm::{
     execute,
     terminal::{Clear, ClearType},
 };
-use std::fmt::write;
 use std::io::{stdout, Write};
-use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -30,6 +28,7 @@ pub struct ProgressBar {
     message: Arc<Mutex<String>>,
     hidden: Arc<Mutex<bool>>,
     spinner_index: Arc<Mutex<usize>>,
+    start_row: Arc<Mutex<u16>>,
 }
 
 #[allow(dead_code)]
@@ -43,6 +42,7 @@ impl ProgressBar {
             message: Arc::new(Mutex::new(String::new())),
             hidden: Arc::new(Mutex::new(false)),
             spinner_index: Arc::new(Mutex::new(0)),
+            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
         }
     }
 
@@ -55,6 +55,7 @@ impl ProgressBar {
             message: Arc::new(Mutex::new(String::new())),
             hidden: Arc::new(Mutex::new(false)),
             spinner_index: Arc::new(Mutex::new(0)),
+            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
         };
         progress_bar
     }
@@ -68,6 +69,7 @@ impl ProgressBar {
             message: Arc::new(Mutex::new(String::new())),
             hidden: Arc::new(Mutex::new(true)),
             spinner_index: Arc::new(Mutex::new(0)),
+            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
         }
     }
 
@@ -96,6 +98,11 @@ impl ProgressBar {
         *message = msg.to_string();
     }
 
+    pub fn set_row(&self, row: u16) {
+        let mut start_row = self.start_row.lock().unwrap();
+        *start_row = row;
+    }
+
     pub fn println(&self, message: &str) {
         let mut stdout = stdout();
         execute!(stdout, SavePosition, Clear(ClearType::CurrentLine)).unwrap();
@@ -120,13 +127,14 @@ impl ProgressBar {
         let is_spinning = Arc::clone(&self.is_spinning);
         let s = self.clone();
         *is_spinning.lock().unwrap() = true;
+        let current_row = Arc::clone(&self.start_row);
 
         thread::spawn(move || {
             while *is_spinning.lock().unwrap() {
                 if *progress.lock().unwrap() >= total {
                     break;
                 }
-                s.draw_spinner();
+                s.draw_spinner(true);
                 for _ in 0..10 {
                     if !*is_spinning.lock().unwrap() {
                         break;
@@ -135,7 +143,7 @@ impl ProgressBar {
                 }
             }
             let mut stdout = stdout();
-            queue!(stdout, MoveLeft(999), Clear(ClearType::CurrentLine)).unwrap();
+            queue!(stdout,MoveTo(0, *current_row.lock().unwrap()), Clear(ClearType::CurrentLine)).unwrap();
             stdout.flush().unwrap();
         });
     }
@@ -145,17 +153,19 @@ impl ProgressBar {
         *is_spinning = false;
     }
 
-    pub fn draw_spinner(&self) {
+    pub fn draw_spinner(&self, inc_index: bool) {
         if !self.is_spinner {
             return;
         }
         let mut stdout = stdout();
         let message = Arc::clone(&self.message);
         let mut index = self.spinner_index.lock().unwrap();
+        let current_row = self.start_row.lock().unwrap();
+
         queue!(
             stdout,
             SavePosition,
-            MoveLeft(999),
+            MoveTo(0, *current_row),
             Clear(ClearType::CurrentLine),
             Print(format!(
                 "{} {}",
@@ -166,7 +176,10 @@ impl ProgressBar {
         .unwrap();
         queue!(stdout, RestorePosition).unwrap();
         stdout.flush().unwrap();
-        *index = (*index + 1) % SPINNER_CHARS.len();
+        if inc_index {
+            *index = (*index + 1) % SPINNER_CHARS.len();
+        }
+        
     }
 
     pub fn draw(&self) {
@@ -175,16 +188,18 @@ impl ProgressBar {
         if *hidden {
             return;
         } else if self.is_spinner {
-            self.draw_spinner();
+            self.draw_spinner(false);
+            return;
         } else {
             let progress = self.get_progress();
             let percentage = (progress as f64 / self.total as f64) * 100.0;
             let message = self.message.lock().unwrap();
+            let current_row = self.start_row.lock().unwrap();
 
             queue!(
                 stdout,
                 SavePosition,
-                MoveLeft(999),
+                MoveTo(0, *current_row),
                 Clear(ClearType::CurrentLine),
                 Print(format!(
                     "[{}{}] [{}/{}] {}",
@@ -217,7 +232,7 @@ pub struct MultiProgress {
 
 #[derive(PartialEq)]
 pub enum AddLocation {
-    Top,
+    //Top,   -- not working quite right yet
     Bottom,
 }
 
@@ -236,23 +251,26 @@ impl MultiProgress {
     pub fn add_with_location(
         &self,
         progress_bar: ProgressBar,
-        location: AddLocation,
+        _location: AddLocation,
     ) -> Arc<ProgressBar> {
         let mut stdout = stdout();
         let current_row = self.start_row.lock().unwrap();
         let mut local_current_row = *current_row;
         let arc_progress_bar = Arc::new(progress_bar);
         let mut progress_bars = self.progress_bars.lock().unwrap();
-        if location == AddLocation::Top {
-            progress_bars.insert(0, arc_progress_bar.clone());
-        } else {
+        local_current_row += progress_bars.len() as u16;
+        execute!(stdout, MoveTo(0,local_current_row)).unwrap();
+
+        //if location == AddLocation::Top {
+        //    progress_bars.insert(0, arc_progress_bar.clone());
+        //} else {
             progress_bars.push(arc_progress_bar.clone());
-        }
+        //}
         //progress_bars.push(arc_progress_bar.clone());
         // if progress_bars.len() > 1 {
         //     execute!(stdout, MoveDown(1)).unwrap();
         // }
-        local_current_row += progress_bars.len() as u16;
+        
         drop(progress_bars);
         //drop(current_row);
         //self.draw_all();
@@ -284,23 +302,24 @@ impl MultiProgress {
     }
 
     fn stop_all_spinners(&self) {
-        let progress_bars = self.progress_bars.lock().unwrap();
-        for progress_bar in progress_bars.iter() {
-            progress_bar.stop_spinner();
-        }
+        // let progress_bars = self.progress_bars.lock().unwrap();
+        // for progress_bar in progress_bars.iter() {
+        //     progress_bar.stop_spinner();
+        // }
     }
 
     fn start_all_spinners(&self) {
-        let progress_bars = self.progress_bars.lock().unwrap();
-        for progress_bar in progress_bars.iter() {
-            progress_bar.start_spinner();
-        }
+        // let progress_bars = self.progress_bars.lock().unwrap();
+        // for progress_bar in progress_bars.iter() {
+        //     progress_bar.start_spinner();
+        // }
     }
 
     pub fn draw_all(&self) {
         self.stop_all_spinners();
         let progress_bars = self.progress_bars.lock().unwrap();
-        let mut current_row = self.start_row.lock().unwrap();
+        let current_row = self.start_row.lock().unwrap();
+        let mut bar_row = *current_row;
         let mut stdout = stdout();
 
         queue!(
@@ -312,9 +331,10 @@ impl MultiProgress {
         .unwrap();
 
         for progress_bar in progress_bars.iter() {
+            progress_bar.set_row(bar_row);
             progress_bar.draw();
             queue!(stdout, MoveToNextLine(1)).unwrap();
-            //*current_row += 1;
+            bar_row += 1;
             
         }
         drop(progress_bars);
@@ -375,9 +395,17 @@ impl MultiProgress {
             .iter()
             .position(|x| Arc::ptr_eq(&x.progress, &progress_bar.progress))
         {
+            let bar = progress_bars[pos].clone();
             progress_bars[pos].increment(value);
             drop(progress_bars);
-            self.draw_all();
+            bar.draw();
         }
+    }
+
+    pub fn get_progress_bars_count(&self) -> usize {
+        let progress_bars = self.progress_bars.lock().unwrap();
+        let count = progress_bars.len();
+        drop(progress_bars);
+        count
     }
 }
