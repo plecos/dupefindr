@@ -61,24 +61,21 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::style::{Color, SetAttribute, SetForegroundColor};
 use crossterm::terminal::{self, ClearType};
-use crossterm::{cursor, execute, queue, style, ExecutableCommand};
+use crossterm::{cursor, execute, queue, style};
 use glob;
-//use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
 use progressbar::AddLocation;
+use std::collections::HashMap;
 use std::io::{self, stdout, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::thread::yield_now;
 use std::time::Instant;
 use std::time::UNIX_EPOCH;
-use std::{collections::HashMap, time::Duration};
 use std::{fs, thread};
 use threadpool::ThreadPool;
 
 mod progressbar;
-
-static DEBUG_DELAY: u64 = 0;
 
 #[derive(Parser, Debug)]
 #[command(name = "Dupefindr", version)]
@@ -93,6 +90,8 @@ struct Args {
     command: Commands,
 }
 
+/// # SharedOptions
+/// Struct representing the shared options.
 #[derive(Parser, Debug, Clone)]
 struct SharedOptions {
     /// The directory to search for duplicates in.
@@ -137,10 +136,6 @@ struct SharedOptions {
     /// Display verbose output
     #[arg(short, long, default_value = "false")]
     verbose: bool,
-
-    /// for testing
-    #[arg(short, long, default_value = "false")]
-    testing: bool,
 }
 
 /// # Duplicate Selection Method
@@ -223,19 +218,32 @@ struct DuplicateFileSet {
     extras: Vec<FileInfo>,
 }
 
+/// # SearchResults
+/// Struct representing the search results.
+/// * `number_duplicates` - The number of duplicate sets found.
+/// * `total_size` - The total size of the duplicates found.
 #[derive(Debug, Clone)]
 struct SearchResults {
     number_duplicates: usize,
     total_size: usize,
 }
 
-// setup dependency injection for file copy, move, and delete
+/// # FileOperations
+/// Trait for file operations such as copy, move, and delete.
+/// * `copy` - Copy a file from source to destination.
+/// * `remove_file` - Remove a file.
+/// * `rename` - Rename a file.
 trait FileOperations {
     fn copy(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
     fn remove_file(&self, source: &str) -> Result<(), std::io::Error>;
     fn rename(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
 }
 
+/// # RealFileOperations
+/// Implementation of `FileOperations` for real file operations.
+/// * `copy` - Copy a file from source to destination.
+/// * `remove_file` - Remove a file.
+/// * `rename` - Rename a file.
 struct RealFileOperations;
 
 impl FileOperations for RealFileOperations {
@@ -262,6 +270,9 @@ impl FileOperations for RealFileOperations {
     }
 }
 
+/// # TerminalGuard
+/// Struct to guard the terminal and reset it when dropped.
+/// * `drop` - Reset the terminal.
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
@@ -271,6 +282,15 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// # myprintln
+/// Macro to print a line to the terminal.
+/// * `()` - Print a blank line.
+/// * `($($arg:tt)*)` - Print the formatted string.
+/// # Examples
+/// ```
+/// myprintln!();
+/// myprintln!("Hello, world!");
+/// ```
 macro_rules! myprintln {
     () => {{
         let _ = execute!(
@@ -290,6 +310,15 @@ macro_rules! myprintln {
     }};
 }
 
+/// # myeprintln
+/// Macro to print a line to the terminal in red.
+/// * `()` - Print a blank line.
+/// * `($($arg:tt)*)` - Print the formatted string.
+/// # Examples
+/// ```
+/// myeprintln!();
+/// myeprintln!("Error: Something went wrong");
+/// ```
 macro_rules! myeprintln {
     () => {{
         let _ = execute!(
@@ -332,41 +361,6 @@ fn main() {
 
     setup_ctrlc_handler(args.shared.debug, r.clone());
 
-    if args.shared.testing {
-        let multi = progressbar::MultiProgress::new();
-        //let bar: progressbar::ProgressBar = progressbar::ProgressBar::new(10).with_message("test".to_string());
-        let spinner = progressbar::ProgressBar::new_spinner().with_message("spinner");
-
-        let bar = multi.add(progressbar::ProgressBar::new(100).with_message("bar"));
-        //std::thread::sleep(std::time::Duration::from_secs(5));
-        //multi.println("line 1");
-        //std::thread::sleep(std::time::Duration::from_secs(5));
-        let bar2 = multi.add(progressbar::ProgressBar::new(50).with_message("bar2"));
-        let bar3 = multi.add(progressbar::ProgressBar::new(350).with_message("bar3"));
-        spinner.start_spinner();
-        //std::thread::sleep(std::time::Duration::from_secs(5));
-        multi.println("line 1");
-        multi.println("line 2");
-        multi.println("line 3");
-
-        for i in 0..95 {
-            bar.increment(1);
-            bar2.increment(2);
-            bar3.increment(3);
-            multi.draw_all();
-            //multi.println(&format!("incrementing {}", i));
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            if (i == 30) {
-                // remove someone
-                multi.remove(&bar2);
-                bar2.finish();
-            }
-        }
-
-        reset_terminal();
-        std::process::exit(0);
-    }
-
     match start_search(&file_ops, &args, r) {
         Ok(search_results) => {
             let duration = start.elapsed();
@@ -391,25 +385,28 @@ fn main() {
     }
 }
 
+/// # print_banner
+/// Function to print the banner to the terminal.
 fn print_banner() {
-    let _ = stdout().execute(SetAttribute(style::Attribute::Bold));
     let _ = queue!(
         stdout(),
+        SetAttribute(style::Attribute::Bold),
         style::Print("dupefindr"),
-        cursor::MoveToNextLine(2)
+        cursor::MoveToNextLine(2),
+        SetAttribute(style::Attribute::Reset),
     );
-    let _ = stdout().execute(SetAttribute(style::Attribute::Reset));
     let _ = stdout().flush();
 }
 
+/// # setup_ctrlc_handler
+/// Function to setup the ctrl-c handler.
 fn setup_ctrlc_handler(debug: bool, running: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     // spawn a thread that will get key events and check for ctrl-c
     std::thread::spawn(move || -> Result<(), anyhow::Error> {
         loop {
-            // using a 100 ms timeout to be cpu friendly
+            // using a 10 ms timeout to be cpu friendly
             if event::poll(std::time::Duration::from_millis(10))? {
                 if let Event::Key(key_event) = event::read()? {
-                    myprintln!("Key event: {:?}", key_event);
                     if key_event.code == KeyCode::Char('c')
                         && key_event
                             .modifiers
@@ -429,9 +426,10 @@ fn setup_ctrlc_handler(debug: bool, running: std::sync::Arc<std::sync::atomic::A
     });
 }
 
+/// # setup_terminal
+/// Setup the terminal for the program.
 fn setup_terminal() {
     let _ = terminal::enable_raw_mode();
-    //let _ = execute!(stdout(), terminal::EnterAlternateScreen);
 
     // Clear the screen
     let _ = execute!(
@@ -443,17 +441,15 @@ fn setup_terminal() {
     );
 }
 
+/// # reset_terminal
+/// Reset the terminal.
 fn reset_terminal() {
     io::stdout().flush().unwrap();
-    let _ = execute!(
-        stdout(),
-        style::ResetColor,
-        cursor::Show,
-        //terminal::LeaveAlternateScreen
-    );
+    let _ = execute!(stdout(), style::ResetColor, cursor::Show,);
     let _ = terminal::disable_raw_mode();
 }
 
+/// # get_command_line_arguments
 /// Gets the command line arguments object.  Not included in testing since there are no command lines passed in
 #[cfg(not(tarpaulin_include))]
 fn get_command_line_arguments() -> Args {
@@ -481,12 +477,20 @@ fn get_command_line_arguments() -> Args {
         myprintln!("Wildcard: {}", args.shared.wildcard);
         myprintln!("Exclusion wildcard: {}", args.shared.exclusion_wildcard);
         myprintln!("Available cpus: {}", default_parallelism_approx);
-        myprintln!("Testing mode: {}", args.shared.testing);
         myprintln!();
     }
 
     args
 }
+
+/// # start_search
+/// Start the search for duplicate files.
+/// * `file_ops` - The file operations object.
+/// * `args` - The command line arguments.
+/// * `running` - The running flag.
+/// * `Result<SearchResults, io::Error>` - The search results.
+/// # Errors
+/// * `io::Error` - An error occurred during the search.
 fn start_search<T: FileOperations>(
     file_ops: &T,
     args: &Args,
@@ -494,12 +498,15 @@ fn start_search<T: FileOperations>(
 ) -> Result<SearchResults, io::Error> {
     // get the files in the directory
     let folder_path: String = args.shared.path.clone();
+    // these are used to pass the running flag to the functions
     let r1 = running.clone();
     let r2 = running.clone();
     let r3 = running.clone();
 
-    let _result = get_files_in_directory(args, folder_path, None, r1);
-    let _files = match _result {
+    // get the files in the directory
+    // it calls itself as it traverses the tree if recursive is set
+    let result = get_files_in_directory(args, folder_path, None, r1);
+    let files = match result {
         Ok(files) => files,
         Err(e) => {
             myprintln!("Error: {}", e);
@@ -507,14 +514,15 @@ fn start_search<T: FileOperations>(
         }
     };
     if args.shared.verbose {
-        myprintln!("Found {} files", _files.len());
+        myprintln!("Found {} files", files.len());
     }
 
     // identify the duplicates
-    let full_hash_map = identify_duplicates(args, _files, r2);
+    let full_hash_map = identify_duplicates(args, files, r2);
+    // process the duplicates
     let hash_map = process_duplicates(file_ops, args, &full_hash_map, r3);
 
-    // print the duplicates
+    // print the duplicate results
     let duplicates_found = hash_map.len();
     let mut duplicates_total_size: i64 = 0;
     for (hash, files) in hash_map.iter() {
@@ -540,6 +548,7 @@ fn start_search<T: FileOperations>(
         }
     }
 
+    // return the search results
     let search_results: SearchResults = SearchResults {
         number_duplicates: duplicates_found,
         total_size: duplicates_total_size as usize,
@@ -547,6 +556,16 @@ fn start_search<T: FileOperations>(
     Ok(search_results)
 }
 
+/// # get_files_in_directory
+/// Get files in the specified directory. Calls itself recursively if the recursive flag is set.
+/// * `args` - The command line arguments.
+/// * `folder_path` - The directory to search in.
+/// * `multi` - The progress bar (optional)
+/// * `running` - The running flag.
+/// * `Result<Vec<FileInfo>, io::Error>` - The files in the directory.
+/// # Errors
+/// * `io::Error` - An error occurred during the search.
+///
 fn get_files_in_directory(
     args: &Args,
     folder_path: String,
@@ -556,7 +575,12 @@ fn get_files_in_directory(
     let multi = multi.unwrap_or_else(progressbar::MultiProgress::new);
     let mut files: Vec<FileInfo> = Vec::new();
     let running2 = running.clone();
-    //let dir_path = std::path::Path::new(folder_path.as_str());
+
+    if running.load(std::sync::atomic::Ordering::SeqCst) == false {
+        return Err(io::Error::new(io::ErrorKind::Other, "Program terminated"));
+    }
+
+    // check if the path is a directory
     match fs::metadata(folder_path.as_str()) {
         Ok(metadata) => {
             if !metadata.is_dir() {
@@ -575,27 +599,14 @@ fn get_files_in_directory(
     if args.shared.debug {
         let _ = multi.println(&format!("Collecting objects in: {}", folder_path));
     }
+
+    // collect the entries in the directory
     let entries = fs::read_dir(&folder_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
     if args.shared.debug {
         let _ = multi.println(&format!("Finished collecting objects in: {}", folder_path));
     }
-
-    // let sty_folders = ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-    //     .unwrap()
-    //     .progress_chars("##-");
-
-    // let sty_files = ProgressStyle::with_template("{bar:40.green/green} {pos:>7}/{len:7} {msg}")
-    //     .unwrap()
-    //     .progress_chars("##-");
-
-    // let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
-    //     .unwrap()
-    //     .progress_chars("##-");
-
-    // process directories first
-    //let bar = multi.add(ProgressBar::new_spinner());
 
     // only add a spinner if the multi is empty
     let bar = if args.shared.quiet {
@@ -611,8 +622,7 @@ fn get_files_in_directory(
         }
     };
     multi.draw_all();
-    bar.start_spinner(); //bar.set_style(sty_processing);
-                         //bar.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
+    bar.start_spinner();
 
     let mut folder_count = 0;
     let mut file_count = 0;
@@ -626,25 +636,32 @@ fn get_files_in_directory(
         let _ = multi.println(&format!("Iterating entries: {}", folder_path));
     }
 
-    //let loop_start = Instant::now();
-
-    // use thread pool to optimize the process
-
+    // use thread pool to optimize the process of scanning then directory objects
+    // if there are a lot of folders and/or files in the directory, this will speed up the process
     for entry in entries.iter() {
         let tx = tx.clone();
         let entry = entry.clone();
+        let running = running.clone();
         pool.execute(move || {
+            // check if the entry is a directory
+            if running.load(std::sync::atomic::Ordering::SeqCst) == false {
+                return;
+            }
             let is_dir = entry.is_dir();
-            tx.send((entry, is_dir)).unwrap();
+            tx.send((entry, is_dir)).unwrap_or_default();
         });
     }
     if args.shared.debug {
         let _ = multi.println(&format!("Completed iterating entries: {}", folder_path));
     }
 
-    // wait for the jobs to complete, and process the result
+    // wait for the jobs to complete, and process the results
     let mut processed = 0;
     while processed < files_count {
+        // check if the program is still running
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(files);
+        }
         match rx.try_recv() {
             Ok((entry, is_dir)) => {
                 if is_dir {
@@ -664,21 +681,14 @@ fn get_files_in_directory(
                 break;
             }
         }
-        if !running.load(std::sync::atomic::Ordering::SeqCst) {
-            break;
-        }
     }
 
-    //let loop_duration = loop_start.elapsed();
-    //myprintln!("Loop execution time: {:?}", loop_duration);
-
-    //bar.finish();
-    //multi.remove(&bar);
-
+    // check if the program is still running
     if !running.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(files);
     }
 
+    // process the folders
     if folder_count != 0 {
         let bar2 = if args.shared.quiet {
             multi.add(progressbar::ProgressBar::hidden())
@@ -686,11 +696,11 @@ fn get_files_in_directory(
             multi.add(progressbar::ProgressBar::new(folder_count))
         };
         multi.draw_all();
-        //bar2.set_style(sty_folders);
 
         for fld in folders.iter() {
             multi.set_message(&bar2, format!("Folder {}", fld.display()).as_str());
             let hidden: bool;
+            // check if the folder is hidden - use appropriate code for the OS
             #[cfg(not(target_os = "windows"))]
             {
                 hidden = fld.file_name().unwrap().to_str().unwrap().starts_with(".");
@@ -720,6 +730,7 @@ fn get_files_in_directory(
                 }
             }
 
+            // if we aren't recursive, then ignore any folders we find
             if !args.shared.recursive {
                 if args.shared.verbose {
                     let _ = multi.println(&format!(
@@ -727,7 +738,9 @@ fn get_files_in_directory(
                         fld.file_name().unwrap().to_str().unwrap()
                     ));
                 }
+                multi.increment(&bar2, 1);
             } else {
+                // if we are recursive, then process the sub folders
                 let path = fld.as_path();
                 // recursion call
                 let sub_files = get_files_in_directory(
@@ -736,15 +749,18 @@ fn get_files_in_directory(
                     Some(multi.clone()),
                     running2.clone(),
                 )?;
+                // add results to our files vector
                 files.extend(sub_files);
                 multi.increment(&bar2, 1);
             }
         }
 
+        // remove the progress bar for this folder
         bar2.finish();
-        multi.remove((&bar2));
+        multi.remove(&bar2);
     }
-    //multi.remove(&bar2);
+
+    // now process files
     if file_count != 0 {
         let bar2 = if args.shared.quiet {
             multi.add(progressbar::ProgressBar::hidden())
@@ -752,9 +768,12 @@ fn get_files_in_directory(
             multi.add(progressbar::ProgressBar::new(file_count))
         };
         multi.draw_all();
-        //bar2.set_style(sty_files);
 
         for entry in entries.iter() {
+            // check if the program is still running
+            if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             let path = entry.as_path();
             let _ = multi.set_message(&bar2, format!("Processing: {}", path.display()).as_str());
 
@@ -789,6 +808,7 @@ fn get_files_in_directory(
                     }
                 }
 
+                // check if file is hidden using appropriate code for the OS
                 let hidden: bool;
                 #[cfg(not(target_os = "windows"))]
                 {
@@ -806,26 +826,25 @@ fn get_files_in_directory(
                     }
                 }
                 if args.shared.include_hidden_files == false && hidden {
+                    // skip hidden files if not including them
                     if args.shared.verbose {
                         let _ = multi
                             .println(&format!("Ignoring hidden file: {}", path.to_str().unwrap()));
                     }
-                    if args.shared.debug {
-                        thread::sleep(Duration::from_millis(DEBUG_DELAY));
-                    }
+
                     multi.increment(&bar2, 1);
                     continue;
                 }
+                // get the file metadata
                 let meta = std::fs::metadata(&path).unwrap();
                 let size = meta.len();
                 if size == 0 && !args.shared.include_empty_files {
+                    // skip empty files if not including them
                     if args.shared.verbose {
                         let _ = multi
                             .println(&format!("Ignoring empty file: {}", path.to_str().unwrap()));
                     }
-                    if args.shared.debug {
-                        thread::sleep(Duration::from_millis(DEBUG_DELAY));
-                    }
+
                     multi.increment(&bar2, 1);
                     continue;
                 }
@@ -840,6 +859,7 @@ fn get_files_in_directory(
                     + chrono::Duration::from_std(modified_at.duration_since(UNIX_EPOCH).unwrap())
                         .unwrap();
 
+                // store results in our files vector
                 let file_info = FileInfo {
                     path: path.to_str().unwrap().to_string(),
                     size,
@@ -864,11 +884,17 @@ fn get_files_in_directory(
         bar2.finish();
         multi.remove(&bar2);
     }
+
     bar.finish();
     multi.remove(&bar);
     Ok(files)
 }
 
+/// # identify_duplicates
+/// Identify duplicate files based on their MD5 hash
+/// * `args` - The command line arguments.
+/// * `files` - The files to process.
+/// * `running` - The running flag.
 fn identify_duplicates(
     args: &Args,
     files: Vec<FileInfo>,
@@ -878,14 +904,6 @@ fn identify_duplicates(
     let multi = progressbar::MultiProgress::new();
     let workers = num_cpus::get();
 
-    // let sty_dupes =
-    //     ProgressStyle::with_template("ETA {eta} {bar:40.yellow/blue} {pos:>7}/{len:7} {msg}")
-    //         .unwrap()
-    //         .progress_chars("##-");
-    // let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
-    //     .unwrap()
-    //     .progress_chars("##-");
-
     let bar2 = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
     } else {
@@ -893,7 +911,6 @@ fn identify_duplicates(
             progressbar::ProgressBar::new_spinner().with_message("Identifying duplicates..."),
             AddLocation::Bottom,
         )
-        //multi.add(progressbar::ProgressBar::hidden())
     };
 
     let bar = if args.shared.quiet {
@@ -903,13 +920,9 @@ fn identify_duplicates(
             files.len().try_into().unwrap(),
         ))
     };
-    //bar.set_style(sty_dupes);
 
     multi.draw_all();
     bar2.start_spinner();
-    //multi.println("Identifying duplicates...");
-    //bar2.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
-    //bar2.set_style(sty_processing);
 
     // we will use a thread pool to optimize the hashing process
     // the thread pool will use one thread per cpu core
@@ -938,7 +951,7 @@ fn identify_duplicates(
         });
     }
 
-    // wait for the jobs to complete, and process the result
+    // wait for the jobs to complete, and process the results
     rx.iter().take(files_count).for_each(|(hash_string, file)| {
         if hash_string.is_empty() {
             if args.shared.debug {
@@ -955,6 +968,8 @@ fn identify_duplicates(
                 file.path, file.size, hash_string
             ));
         }
+        // add the file and hash to the map
+        // if the hash doesn't exist, create a new vector
         if !hash_map.contains_key(&hash_string) {
             let mut vec = Vec::new();
             vec.push(file);
@@ -976,6 +991,12 @@ fn identify_duplicates(
     hash_map
 }
 
+/// # process_duplicates
+/// Process the duplicate files using the method specified in cmd line args
+/// * `file_ops` - The file operations object.
+/// * `args` - The command line arguments.
+/// * `hash_map` - The hash map of files.
+/// * `running` - The running flag.
 fn process_duplicates<T: FileOperations>(
     file_ops: &T,
     args: &Args,
@@ -983,17 +1004,8 @@ fn process_duplicates<T: FileOperations>(
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> HashMap<String, Vec<FileInfo>> {
     let mut new_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
-    //let workers = num_cpus::get();
 
     let mut multi = progressbar::MultiProgress::new();
-    // let sty_processing = ProgressStyle::with_template("{spinner:.green} {msg}")
-    //     .unwrap()
-    //     .progress_chars("##-");
-
-    // let sty_dupes =
-    //     ProgressStyle::with_template("ETA {eta} {bar:40.yellow/blue} {pos:>7}/{len:7} {msg}")
-    //         .unwrap()
-    //         .progress_chars("##-");
 
     let bar2 = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
@@ -1014,12 +1026,8 @@ fn process_duplicates<T: FileOperations>(
 
     multi.draw_all();
     bar2.start_spinner();
-    //bar.set_style(sty_dupes);
 
-    //bar2.lock().unwrap().enable_steady_tick(Some(Duration::from_millis(100)));
-    //bar2.set_style(sty_processing);
-
-    // get list of files to process
+    // get the method
     let method = match &args.command {
         Commands::MoveDuplicates { method, .. } => method,
         Commands::CopyDuplicates { method, .. } => method,
@@ -1027,7 +1035,7 @@ fn process_duplicates<T: FileOperations>(
         Commands::FindDuplicates { method } => method,
     };
 
-    // if the dupliate selection method is "interactive" then we need to turn off the progress bars
+    // if the duplicate selection method is "interactive" then we need to turn off the progress bars
     if *method == DuplicateSelectionMethod::Interactive {
         let _ = bar.finish();
         let _ = bar2.finish();
@@ -1036,53 +1044,50 @@ fn process_duplicates<T: FileOperations>(
         multi.finish_all();
     }
 
+    // get list of files to process
     for (hash, files) in hash_map.iter() {
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
+        // if there is only one file, then it isn't a duplicate
         if files.len() > 1 {
             new_hash_map.insert(hash.clone(), files.clone());
-            // let pool = ThreadPool::new(workers);
-            // let (tx, rx) = channel();
-            // let files_count = files.len();
-            match &args.command {
-                Commands::FindDuplicates { method: _ } => {
-                    if args.shared.debug {
+
+            if args.shared.debug {
+                match &args.command {
+                    Commands::FindDuplicates { method: _ } => {
                         let _ = multi.println(&format!("FindDuplicates: {}", hash));
                     }
-                    continue;
-                }
-                Commands::MoveDuplicates {
-                    location,
-                    method: _,
-                } => {
-                    if args.shared.debug {
+                    Commands::MoveDuplicates {
+                        location,
+                        method: _,
+                    } => {
                         let _ = multi.println(&format!("MoveDuplicates: {} to {}", hash, location));
                     }
-                }
-                Commands::CopyDuplicates {
-                    location,
-                    method: _,
-                } => {
-                    if args.shared.debug {
+                    Commands::CopyDuplicates {
+                        location,
+                        method: _,
+                    } => {
                         let _ = multi.println(&format!("CopyDuplicates: {} to {}", hash, location));
                     }
-                }
-                Commands::DeleteDuplicates { method: _ } => {
-                    if args.shared.debug {
+                    Commands::DeleteDuplicates { method: _ } => {
                         let _ = multi.println(&format!("DeleteDuplicates: {}", hash));
                     }
                 }
             }
 
+            if let Commands::FindDuplicates { .. } = args.command {
+                continue;
+            }
+
             let dup_fileset = select_duplicate_files(method.clone(), hash, files, &bar2);
             if dup_fileset.keeper.is_none() {
                 if args.shared.debug {
-                    let _ = multi.println("**************************************");
-                    let _ = multi.println("keeper is none, this shouldn't happen!");
-                    let _ = multi.println(&format!("Method: {:?}", method));
-                    let _ = multi.println(&format!("Files: {:?}", files));
-                    let _ = multi.println("**************************************");
+                    let _ = multi.eprintln("**************************************");
+                    let _ = multi.eprintln("keeper is none, this shouldn't happen!");
+                    let _ = multi.eprintln(&format!("Method: {:?}", method));
+                    let _ = multi.eprintln(&format!("Files: {:?}", files));
+                    let _ = multi.eprintln("**************************************");
                 }
                 continue;
             }
@@ -1097,7 +1102,7 @@ fn process_duplicates<T: FileOperations>(
                 let _ = process_a_duplicate_file(file_ops, args, &file, &mut multi);
             }
         }
-        bar.increment(1);
+        multi.increment(&bar, 1);
     }
 
     let _ = bar.finish();
@@ -1108,6 +1113,15 @@ fn process_duplicates<T: FileOperations>(
     new_hash_map
 }
 
+/// # process_a_duplicate_file
+/// Process a duplicate file based on the command line arguments
+/// * `file_ops` - The file operations object.
+/// * `args` - The command line arguments.
+/// * `file` - The file to process.
+/// * `multi` - The progress bar.
+/// * `Result<(), std::io::Error>` - The result of the operation.
+/// # Errors
+/// * `std::io::Error` - An error occurred during the operation.
 fn process_a_duplicate_file<T: FileOperations>(
     file_ops: &T,
     args: &Args,
@@ -1142,6 +1156,7 @@ fn process_a_duplicate_file<T: FileOperations>(
         }
     }
 
+    // if not a dry run, then perform the operation
     if !args.shared.dry_run {
         if args.shared.verbose {
             // location is empty for Find and Delete commands
@@ -1194,6 +1209,13 @@ fn process_a_duplicate_file<T: FileOperations>(
     }
 }
 
+/// # get_hash_of_file
+/// Get the MD5 hash of a file
+/// * `file_path` - The path to the file.
+/// * `bar` - The progress bar.
+/// * `Result<String, std::io::Error>` - The MD5 hash of the file.
+/// # Errors
+/// * `std::io::Error` - An error occurred during the operation.
 fn get_hash_of_file(
     file_path: &str,
     _bar: &progressbar::ProgressBar,
@@ -1213,6 +1235,11 @@ fn get_hash_of_file(
     }
 }
 
+/// # get_md5_hash
+/// Get the MD5 hash of a buffer
+/// * `buffer` - The buffer to hash.
+/// # Returns
+/// * `String` - The MD5 hash.
 fn get_md5_hash(buffer: &Vec<u8>) -> String {
     let mut hasher = md5::Md5::new();
     hasher.update(&buffer);
@@ -1220,6 +1247,14 @@ fn get_md5_hash(buffer: &Vec<u8>) -> String {
     format!("{:x}", hash)
 }
 
+/// # select_duplicate_files
+/// Select the duplicate files based on the method specified in the command line arguments
+/// * `method` - The method to use.
+/// * `hash` - The hash of the files.
+/// * `files` - The files to process.
+/// * `bar` - The progress bar.
+/// # Returns
+/// * `DuplicateFileSet` - The set of duplicate files.
 fn select_duplicate_files(
     method: DuplicateSelectionMethod,
     hash: &String,
@@ -1253,78 +1288,55 @@ fn select_duplicate_files(
         DuplicateSelectionMethod::Interactive => {
             use crossterm::execute;
             let mut selected_index = 0;
-            // let _ = terminal::enable_raw_mode();
-            // let _ = execute!(stdout(), terminal::EnterAlternateScreen);
 
-            // // Clear the screen
-            // let _ = queue!(
-            //     stdout(),
-            //     style::ResetColor,
-            //     terminal::Clear(ClearType::All),
-            //     cursor::Hide,
-            //     cursor::MoveTo(0, 0)
-            // );
-            let _ = stdout().execute(SetAttribute(style::Attribute::Bold));
             let _ = queue!(
                 stdout(),
+                SetAttribute(style::Attribute::Bold),
                 style::Print("Duplicate File Interactive Selector"),
-                cursor::MoveToNextLine(1)
-            );
-            let _ = stdout().execute(SetAttribute(style::Attribute::Reset));
-            let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
-            let _ = queue!(
-                stdout(),
+                cursor::MoveToNextLine(1),
+                SetAttribute(style::Attribute::Reset),
+                style::Print(""),
+                cursor::MoveToNextLine(1),
                 style::Print("Move the selector up and down using the ARROW keys"),
-                cursor::MoveToNextLine(1)
-            );
-            let _ = queue!(
-                stdout(),
+                cursor::MoveToNextLine(1),
                 style::Print("Press SPACE to select one or more files to keep"),
-                cursor::MoveToNextLine(1)
-            );
-            let _ = queue!(
-                stdout(),
+                cursor::MoveToNextLine(1),
                 style::Print("Press ENTER to process the unselected duplicate files and continue"),
-                cursor::MoveToNextLine(1)
-            );
-            let _ = queue!(
-                stdout(),
+                cursor::MoveToNextLine(1),
                 style::Print("Press ESC to exit"),
-                cursor::MoveToNextLine(1)
-            );
-            let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
-
-            let _ = queue!(
-                stdout(),
+                cursor::MoveToNextLine(1),
+                style::Print(""),
+                cursor::MoveToNextLine(1),
                 style::Print(format!("For hash [{}]:", hash)),
-                cursor::MoveToNextLine(1)
+                cursor::MoveToNextLine(1),
             );
 
             loop {
                 let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
-                //let default_color = stdout().execute(Co)                // print out list of files to the user
+                // print out list of files to the user
                 for (i, item) in files.iter().enumerate() {
                     if i == selected_index {
-                        let _ = stdout().execute(SetForegroundColor(Color::Red));
                         let _ = queue!(
                             stdout(),
+                            SetForegroundColor(Color::Red),
                             style::Print(format!("> {}", item.path)),
                             cursor::MoveToNextLine(1)
                         );
-                        //println!("> {}", item.path);
                     } else {
-                        let _ = stdout().execute(SetForegroundColor(Color::White));
                         let _ = queue!(
                             stdout(),
+                            SetForegroundColor(Color::Red),
                             style::Print(format!("  {}", item.path)),
                             cursor::MoveToNextLine(1)
                         );
                     }
                 }
+                let _ = queue!(
+                    stdout(),
+                    cursor::MoveToPreviousLine((1 + files.len()).try_into().unwrap(),)
+                );
                 let _ = stdout().flush();
-                let _ = stdout().execute(cursor::MoveToPreviousLine(
-                    (1 + files.len()).try_into().unwrap(),
-                ));
+
                 // get key events
 
                 if let Event::Key(KeyEvent { code, .. }) = event::read().unwrap() {
@@ -1338,9 +1350,6 @@ fn select_duplicate_files(
                             if selected_index < files.len() - 1 {
                                 selected_index += 1;
                             }
-                        }
-                        KeyCode::Char(' ') => {
-                            // select/deselect the file
                         }
                         KeyCode::Enter => {
                             break;
@@ -1359,13 +1368,6 @@ fn select_duplicate_files(
                     }
                 }
             }
-            // let _ = execute!(
-            //     stdout(),
-            //     style::ResetColor,
-            //     cursor::Show,
-            //     terminal::LeaveAlternateScreen
-            // );
-            // let _ = terminal::disable_raw_mode();
         }
     }
     dup_fileset

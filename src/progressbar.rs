@@ -1,8 +1,8 @@
 use crossterm::cursor::{
-    MoveDown, MoveLeft, MoveToNextLine, RestorePosition, SavePosition,
+    MoveDown, MoveToNextLine, RestorePosition, SavePosition,
 };
 use crossterm::queue;
-use crossterm::style::Print;
+use crossterm::style::{Print, SetForegroundColor};
 use crossterm::terminal::ScrollUp;
 use crossterm::{
     cursor::MoveTo,
@@ -261,21 +261,12 @@ impl MultiProgress {
         local_current_row += progress_bars.len() as u16;
         execute!(stdout, MoveTo(0,local_current_row)).unwrap();
 
-        //if location == AddLocation::Top {
-        //    progress_bars.insert(0, arc_progress_bar.clone());
-        //} else {
-            progress_bars.push(arc_progress_bar.clone());
-        //}
-        //progress_bars.push(arc_progress_bar.clone());
-        // if progress_bars.len() > 1 {
-        //     execute!(stdout, MoveDown(1)).unwrap();
-        // }
+        progress_bars.push(arc_progress_bar.clone());
+        
         
         drop(progress_bars);
-        //drop(current_row);
-        //self.draw_all();
         
-        queue!(stdout, MoveTo(0, local_current_row), Clear(ClearType::FromCursorDown)).unwrap();
+        execute!(stdout, MoveTo(0, local_current_row), Clear(ClearType::FromCursorDown)).unwrap();
         arc_progress_bar
     }
 
@@ -371,6 +362,28 @@ impl MultiProgress {
         } else {
             *current_row += 1;
         }
+        drop(progress_bars);
+        drop(current_row);
+        self.draw_all();
+        stdout.flush().unwrap();
+    }
+
+    pub fn eprintln(&self, message: &str) {
+        self.stop_all_spinners();
+        let mut stdout = stdout();
+        let mut current_row = self.start_row.lock().unwrap();
+        let progress_bars = self.progress_bars.lock().unwrap();
+        queue!(
+            stdout,
+            SetForegroundColor(crossterm::style::Color::Red),
+            MoveTo(0, *current_row),
+            Clear(ClearType::CurrentLine),
+            Print(message),
+            crossterm::style::ResetColor,
+        )
+        .unwrap();
+        queue!(stdout, MoveToNextLine(1)).unwrap();
+        *current_row += 1;
         drop(progress_bars);
         drop(current_row);
         self.draw_all();
