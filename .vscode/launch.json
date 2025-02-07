@@ -20,7 +20,7 @@
                 }
             },
             // cargo run -- -p /Volumes/Photos --dry-run --debug copy -l /tmp
-            "args": ["-p","/Volumes/Photos","--dry-run","--debug","--wildcard","IMG_2018*.*","-r","copy","-l","/tmp"],
+            "args": ["-p","/Volumes/Photos","--dry-run","-r","copy","-l","/tmp"],
             "cwd": "${workspaceFolder}"
         },
         {
