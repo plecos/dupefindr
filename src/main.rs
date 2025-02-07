@@ -353,6 +353,17 @@ fn main() {
     // Create an instance of TerminalGuard that will be dropped when main exits
     let _guard = TerminalGuard;
 
+    // before enabling raw mode, we need to test if the command line args passed in were valid
+    // if they aren't then have print the error and exit
+    match Args::try_parse() {
+        Ok(_) => {}
+        Err(e) => {
+            myprintln!("{}", e);
+            myprintln!();
+            std::process::exit(-1);
+        }
+    }
+
     setup_terminal();
 
     print_banner();
