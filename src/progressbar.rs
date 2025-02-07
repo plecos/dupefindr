@@ -1,6 +1,5 @@
-use crossterm::cursor::{
-    MoveDown, MoveToNextLine, RestorePosition, SavePosition,
-};
+use atty::Stream;
+use crossterm::cursor::{MoveDown, MoveToNextLine, RestorePosition, SavePosition};
 use crossterm::queue;
 use crossterm::style::{Print, SetForegroundColor};
 use crossterm::terminal::ScrollUp;
@@ -42,7 +41,11 @@ impl ProgressBar {
             message: Arc::new(Mutex::new(String::new())),
             hidden: Arc::new(Mutex::new(false)),
             spinner_index: Arc::new(Mutex::new(0)),
-            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
+            start_row: Arc::new(Mutex::new(if atty::is(atty::Stream::Stdout) {
+                crossterm::cursor::position().unwrap().1.into()
+            } else {
+                0
+            })),
         }
     }
 
@@ -55,7 +58,11 @@ impl ProgressBar {
             message: Arc::new(Mutex::new(String::new())),
             hidden: Arc::new(Mutex::new(false)),
             spinner_index: Arc::new(Mutex::new(0)),
-            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
+            start_row: Arc::new(Mutex::new(if atty::is(atty::Stream::Stdout) {
+                crossterm::cursor::position().unwrap().1.into()
+            } else {
+                0
+            })),
         };
         progress_bar
     }
@@ -69,7 +76,11 @@ impl ProgressBar {
             message: Arc::new(Mutex::new(String::new())),
             hidden: Arc::new(Mutex::new(true)),
             spinner_index: Arc::new(Mutex::new(0)),
-            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
+            start_row: Arc::new(Mutex::new(if atty::is(atty::Stream::Stdout) {
+                crossterm::cursor::position().unwrap().1.into()
+            } else {
+                0
+            })),
         }
     }
 
@@ -104,12 +115,16 @@ impl ProgressBar {
     }
 
     pub fn println(&self, message: &str) {
-        let mut stdout = stdout();
-        execute!(stdout, SavePosition, Clear(ClearType::CurrentLine)).unwrap();
-        writeln!(stdout, "{}", message).unwrap();
-        execute!(stdout, RestorePosition, MoveDown(1)).unwrap();
-        stdout.flush().unwrap();
-        self.draw();
+        if atty::is(Stream::Stdout) {
+            let mut stdout = stdout();
+            execute!(stdout, SavePosition, Clear(ClearType::CurrentLine)).unwrap();
+            writeln!(stdout, "{}", message).unwrap();
+            execute!(stdout, RestorePosition, MoveDown(1)).unwrap();
+            stdout.flush().unwrap();
+            self.draw();
+        } else {
+            println!("{}", message);
+        }
     }
 
     pub fn with_start_spinner(self) -> Self {
@@ -142,9 +157,16 @@ impl ProgressBar {
                     thread::sleep(Duration::from_millis(10));
                 }
             }
-            let mut stdout = stdout();
-            queue!(stdout,MoveTo(0, *current_row.lock().unwrap()), Clear(ClearType::CurrentLine)).unwrap();
-            stdout.flush().unwrap();
+            if atty::is(Stream::Stdout) {
+                let mut stdout = stdout();
+                queue!(
+                    stdout,
+                    MoveTo(0, *current_row.lock().unwrap()),
+                    Clear(ClearType::CurrentLine)
+                )
+                .unwrap();
+                stdout.flush().unwrap();
+            }
         });
     }
 
@@ -157,32 +179,36 @@ impl ProgressBar {
         if !self.is_spinner {
             return;
         }
-        let mut stdout = stdout();
-        let message = Arc::clone(&self.message);
-        let mut index = self.spinner_index.lock().unwrap();
-        let current_row = self.start_row.lock().unwrap();
+        if atty::is(Stream::Stdout) {
+            let mut stdout = stdout();
+            let message = Arc::clone(&self.message);
+            let mut index = self.spinner_index.lock().unwrap();
+            let current_row = self.start_row.lock().unwrap();
 
-        queue!(
-            stdout,
-            SavePosition,
-            MoveTo(0, *current_row),
-            Clear(ClearType::CurrentLine),
-            Print(format!(
-                "{} {}",
-                SPINNER_CHARS[*index],
-                *message.lock().unwrap()
-            )),
-        )
-        .unwrap();
-        queue!(stdout, RestorePosition).unwrap();
-        stdout.flush().unwrap();
-        if inc_index {
-            *index = (*index + 1) % SPINNER_CHARS.len();
+            queue!(
+                stdout,
+                SavePosition,
+                MoveTo(0, *current_row),
+                Clear(ClearType::CurrentLine),
+                Print(format!(
+                    "{} {}",
+                    SPINNER_CHARS[*index],
+                    *message.lock().unwrap()
+                )),
+            )
+            .unwrap();
+            queue!(stdout, RestorePosition).unwrap();
+            stdout.flush().unwrap();
+            if inc_index {
+                *index = (*index + 1) % SPINNER_CHARS.len();
+            }
         }
-        
     }
 
     pub fn draw(&self) {
+        if !atty::is(Stream::Stdout) {
+            return;
+        }
         let mut stdout = stdout();
         let hidden = self.hidden.lock().unwrap();
         if *hidden {
@@ -240,7 +266,11 @@ impl MultiProgress {
     pub fn new() -> Self {
         MultiProgress {
             progress_bars: Arc::new(Mutex::new(Vec::new())),
-            start_row: Arc::new(crossterm::cursor::position().unwrap().1.into()),
+            start_row: Arc::new(Mutex::new(if atty::is(atty::Stream::Stdout) {
+                crossterm::cursor::position().unwrap().1.into()
+            } else {
+                0
+            })),
         }
     }
 
@@ -259,14 +289,18 @@ impl MultiProgress {
         let arc_progress_bar = Arc::new(progress_bar);
         let mut progress_bars = self.progress_bars.lock().unwrap();
         local_current_row += progress_bars.len() as u16;
-        execute!(stdout, MoveTo(0,local_current_row)).unwrap();
+        execute!(stdout, MoveTo(0, local_current_row)).unwrap();
 
         progress_bars.push(arc_progress_bar.clone());
-        
-        
+
         drop(progress_bars);
-        
-        execute!(stdout, MoveTo(0, local_current_row), Clear(ClearType::FromCursorDown)).unwrap();
+
+        execute!(
+            stdout,
+            MoveTo(0, local_current_row),
+            Clear(ClearType::FromCursorDown)
+        )
+        .unwrap();
         arc_progress_bar
     }
 
@@ -278,14 +312,16 @@ impl MultiProgress {
         {
             let current_row = self.start_row.lock().unwrap();
             progress_bars.remove(pos);
-            let mut stdout = stdout();
-            execute!(
-                stdout,
-                MoveTo(0, *current_row),
-                Clear(ClearType::FromCursorDown)
-            )
-            .unwrap();
-            stdout.flush().unwrap();
+            if atty::is(Stream::Stdout) {
+                let mut stdout = stdout();
+                execute!(
+                    stdout,
+                    MoveTo(0, *current_row),
+                    Clear(ClearType::FromCursorDown)
+                )
+                .unwrap();
+                stdout.flush().unwrap();
+            }
             drop(current_row);
             drop(progress_bars);
             //self.draw_all();
@@ -311,26 +347,28 @@ impl MultiProgress {
         let progress_bars = self.progress_bars.lock().unwrap();
         let current_row = self.start_row.lock().unwrap();
         let mut bar_row = *current_row;
-        let mut stdout = stdout();
 
-        queue!(
-            stdout,
-            SavePosition,
-            MoveTo(0, *current_row),
-            Clear(ClearType::CurrentLine)
-        )
-        .unwrap();
+        if atty::is(Stream::Stdout) {
+            let mut stdout = stdout();
 
-        for progress_bar in progress_bars.iter() {
-            progress_bar.set_row(bar_row);
-            progress_bar.draw();
-            queue!(stdout, MoveToNextLine(1)).unwrap();
-            bar_row += 1;
-            
+            queue!(
+                stdout,
+                SavePosition,
+                MoveTo(0, *current_row),
+                Clear(ClearType::CurrentLine)
+            )
+            .unwrap();
+
+            for progress_bar in progress_bars.iter() {
+                progress_bar.set_row(bar_row);
+                progress_bar.draw();
+                queue!(stdout, MoveToNextLine(1)).unwrap();
+                bar_row += 1;
+            }
+            drop(progress_bars);
+            queue!(stdout, RestorePosition).unwrap();
+            stdout.flush().unwrap();
         }
-        drop(progress_bars);
-        queue!(stdout, RestorePosition).unwrap();
-        stdout.flush().unwrap();
         self.start_all_spinners();
     }
 
@@ -342,52 +380,60 @@ impl MultiProgress {
     }
 
     pub fn println(&self, message: &str) {
-        self.stop_all_spinners();
-        let mut stdout = stdout();
-        let mut current_row = self.start_row.lock().unwrap();
-        let progress_bars = self.progress_bars.lock().unwrap();
-        queue!(
-            stdout,
-            MoveTo(0, *current_row),
-            Clear(ClearType::CurrentLine),
-            Print(message)
-        )
-        .unwrap();
-        
-        // get number of rows on terminal
-        let (_, rows) = crossterm::terminal::size().unwrap();
+        if atty::is(Stream::Stdout) {
+            self.stop_all_spinners();
+            let mut stdout = stdout();
+            let mut current_row = self.start_row.lock().unwrap();
+            let progress_bars = self.progress_bars.lock().unwrap();
+            queue!(
+                stdout,
+                MoveTo(0, *current_row),
+                Clear(ClearType::CurrentLine),
+                Print(message)
+            )
+            .unwrap();
 
-        if rows - 2 - (progress_bars.len() as u16) < *current_row {
-            queue!(stdout, ScrollUp(1)).unwrap();
+            // get number of rows on terminal
+            let (_, rows) = crossterm::terminal::size().unwrap();
+
+            if rows - 2 - (progress_bars.len() as u16) < *current_row {
+                queue!(stdout, ScrollUp(1)).unwrap();
+            } else {
+                *current_row += 1;
+            }
+            drop(progress_bars);
+            drop(current_row);
+            self.draw_all();
+            stdout.flush().unwrap();
         } else {
-            *current_row += 1;
+            println!("{}", message);
         }
-        drop(progress_bars);
-        drop(current_row);
-        self.draw_all();
-        stdout.flush().unwrap();
     }
 
     pub fn eprintln(&self, message: &str) {
-        self.stop_all_spinners();
-        let mut stdout = stdout();
-        let mut current_row = self.start_row.lock().unwrap();
-        let progress_bars = self.progress_bars.lock().unwrap();
-        queue!(
-            stdout,
-            SetForegroundColor(crossterm::style::Color::Red),
-            MoveTo(0, *current_row),
-            Clear(ClearType::CurrentLine),
-            Print(message),
-            crossterm::style::ResetColor,
-        )
-        .unwrap();
-        queue!(stdout, MoveToNextLine(1)).unwrap();
-        *current_row += 1;
-        drop(progress_bars);
-        drop(current_row);
-        self.draw_all();
-        stdout.flush().unwrap();
+        if atty::is(Stream::Stdout) {
+            self.stop_all_spinners();
+            let mut stdout = stdout();
+            let mut current_row = self.start_row.lock().unwrap();
+            let progress_bars = self.progress_bars.lock().unwrap();
+            queue!(
+                stdout,
+                SetForegroundColor(crossterm::style::Color::Red),
+                MoveTo(0, *current_row),
+                Clear(ClearType::CurrentLine),
+                Print(message),
+                crossterm::style::ResetColor,
+            )
+            .unwrap();
+            queue!(stdout, MoveToNextLine(1)).unwrap();
+            *current_row += 1;
+            drop(progress_bars);
+            drop(current_row);
+            self.draw_all();
+            stdout.flush().unwrap();
+        } else {
+            eprintln!("{}", message);
+        }
     }
 
     pub fn set_message(&self, progress_bar: &ProgressBar, msg: &str) {
