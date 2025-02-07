@@ -40,6 +40,10 @@ Options:
 
 Do not remove the testdata folder or alter it in any way. This is used by the tests
 
+# KNOWN ISSUES
+
+- [Sometimes the progress display can get messy, especially if there are lot of subfolders and files.](https://github.com/plecos/dupefindr/issues/3) 
+
 ## Building from source
 
 ### Prerequistes
