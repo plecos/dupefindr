@@ -264,7 +264,7 @@ struct SearchResults {
 trait FileOperations {
     fn copy(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error>;
     fn remove_file(&self, source: &str) -> Result<(), std::io::Error>;
-    fn rename(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
+    fn rename(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error>;
 }
 
 /// # RealFileOperations
@@ -316,8 +316,33 @@ impl FileOperations for RealFileOperations {
         }
     }
     #[cfg(not(tarpaulin_include))]
-    fn rename(&self, source: &str, destination: &str) -> Result<(), std::io::Error> {
-        match std::fs::rename(source, destination) {
+    fn rename(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error> {
+        let mut counter = 1;
+        let mut new_destination = destination.to_string();
+        // if overwrite is false,
+        // then if the destination file already exists, then add a counter to the filename
+        if !overwrite {
+            loop {
+                match std::path::Path::new(&new_destination).try_exists() {
+                    Ok(flag) => {
+                        if !flag {
+                            break;
+                        }
+                        let path = std::path::Path::new(destination);
+                        let parent = path.parent().unwrap().to_str().unwrap();
+                        let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                        let extension = path.extension().unwrap_or_default().to_str().unwrap();
+                        new_destination =
+                            format!("{}/{}_{}.{}", parent, file_stem, counter, extension);
+                        counter += 1;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        match std::fs::rename(source, new_destination) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
@@ -1254,7 +1279,7 @@ fn process_a_duplicate_file<T: FileOperations>(
         match args.command {
             Commands::FindDuplicates { .. } => {}
             Commands::MoveDuplicates { .. } => {
-                if let Err(result) = file_ops.rename(source, &destination) {
+                if let Err(result) = file_ops.rename(source, &destination, overwrite) {
                     error = Some(result);
                 }
             }
@@ -1496,7 +1521,7 @@ mod tests {
             Ok(())
         }
 
-        fn rename(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn rename(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
             // Mock implementation
             Ok(())
         }
@@ -1515,7 +1540,7 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
 
-        fn rename(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn rename(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
             // Mock implementation - produce an error
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
