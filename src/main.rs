@@ -78,6 +78,8 @@ use threadpool::ThreadPool;
 
 mod progressbar;
 
+const BUFFER_READ_SIZE: usize = 1024 * 1024;
+
 #[derive(Parser, Debug)]
 #[command(name = "Dupefindr", version)]
 #[command(about = "A tool to find duplicate files", long_about = None)]
@@ -1230,17 +1232,22 @@ fn get_hash_of_file(
 ) -> Result<String, std::io::Error> {
     let result = std::fs::File::open(file_path);
     match result {
-        Ok(_) => {
-            let mut file = std::fs::File::open(file_path).unwrap();
-            let mut buffer = Vec::new();
-            match file.read_to_end(&mut buffer)
-            {
-                Ok(_) => Ok(get_md5_hash(&buffer)),
-                Err(e) => {
-                    myeprintln!("{}", format!("{:?}", e));
-                    Err(e)
+        Ok(mut f) => {
+            //let mut file = std::fs::File::open(file_path).unwrap();
+            let mut hasher = md5::Md5::new();
+            let mut buffer = [0; BUFFER_READ_SIZE]; // Read in chunks 
+
+            loop {
+                let bytes_read = f.read(&mut buffer)?;
+                if bytes_read == 0 {
+                    break;
                 }
+                hasher.update(&buffer[..bytes_read]);
             }
+
+            let hash = hasher.finalize();
+            Ok(format!("{:x}", hash))
+
         }
         Err(e) => {
             myeprintln!("{}", format!("{:?}", e));
@@ -1254,12 +1261,12 @@ fn get_hash_of_file(
 /// * `buffer` - The buffer to hash.
 /// # Returns
 /// * `String` - The MD5 hash.
-fn get_md5_hash(buffer: &Vec<u8>) -> String {
-    let mut hasher = md5::Md5::new();
-    hasher.update(&buffer);
-    let hash = hasher.finalize();
-    format!("{:x}", hash)
-}
+// fn get_md5_hash(buffer: &Vec<u8>) -> String {
+//     let mut hasher = md5::Md5::new();
+//     hasher.update(&buffer);
+//     let hash = hasher.finalize();
+//     format!("{:x}", hash)
+// }
 
 /// # select_duplicate_files
 /// Select the duplicate files based on the method specified in the command line arguments
@@ -1592,20 +1599,6 @@ mod tests {
             &progressbar::ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_err());
-    }
-
-    #[test]
-    fn test_get_md5_hash() {
-        let buffer = "Hello, world!".as_bytes().to_vec();
-        let hash = get_md5_hash(&buffer);
-        assert_eq!(hash, "6cd3556deb0da54bca060b4c39479839");
-    }
-
-    #[test]
-    fn test_get_md5_hash_empty() {
-        let buffer = "".as_bytes().to_vec();
-        let hash = get_md5_hash(&buffer);
-        assert_eq!(hash, "d41d8cd98f00b204e9800998ecf8427e");
     }
 
     #[test]
