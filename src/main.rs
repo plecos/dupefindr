@@ -67,6 +67,7 @@ use md5::{self, Digest};
 use progressbar::AddLocation;
 use std::collections::HashMap;
 use std::io::{self, stdout, Read, Write};
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::thread::yield_now;
@@ -710,7 +711,7 @@ fn get_files_in_directory(
 
         for fld in folders.iter() {
             multi.set_message(&bar2, format!("Folder {}", fld.display()).as_str());
-            let hidden: bool;
+            let mut hidden: bool = false;
             // check if the folder is hidden - use appropriate code for the OS
             #[cfg(not(target_os = "windows"))]
             {
@@ -718,12 +719,9 @@ fn get_files_in_directory(
             }
             #[cfg(target_os = "windows")]
             {
-                if std::fs::metadata(&path)
-                    .unwrap()
-                    .file_attributes()
-                    .hidden()
-                    .unwrap()
-                {
+                let md = std::fs::metadata(fld);
+                let fa = md.unwrap().file_attributes();
+                if fa & 0x00000002 != 0 {
                     hidden = true;
                 }
             }
@@ -820,7 +818,7 @@ fn get_files_in_directory(
                 }
 
                 // check if file is hidden using appropriate code for the OS
-                let hidden: bool;
+                let mut hidden: bool = false;
                 #[cfg(not(target_os = "windows"))]
                 {
                     hidden = path.file_name().unwrap().to_str().unwrap().starts_with(".");
@@ -830,8 +828,7 @@ fn get_files_in_directory(
                     if std::fs::metadata(&path)
                         .unwrap()
                         .file_attributes()
-                        .hidden()
-                        .unwrap()
+                        & 0x00000002 != 0
                     {
                         hidden = true;
                     }
@@ -1236,8 +1233,14 @@ fn get_hash_of_file(
         Ok(_) => {
             let mut file = std::fs::File::open(file_path).unwrap();
             let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer).unwrap();
-            Ok(get_md5_hash(&buffer))
+            match file.read_to_end(&mut buffer)
+            {
+                Ok(_) => Ok(get_md5_hash(&buffer)),
+                Err(e) => {
+                    myeprintln!("{}", format!("{:?}", e));
+                    Err(e)
+                }
+            }
         }
         Err(e) => {
             myeprintln!("{}", format!("{:?}", e));
