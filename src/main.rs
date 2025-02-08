@@ -173,6 +173,19 @@ enum Commands {
         /// Example: newest, oldest, largest, smallest
         #[arg(short, long, default_value = "newest")]
         method: DuplicateSelectionMethod,
+
+        // do not create subdirectories in the destination
+        #[arg(short, long, default_value = "false")]
+        flatten: bool,
+
+        // do not add the hash of thie file as a folder in the destination and group the duplicates in that folder
+        #[arg(short, long, default_value = "false")]
+        no_hash_folder: bool,
+
+        // overwrite the destination file if it exists - this includes any duplicates that are copied that have the same name
+        #[arg(short, long, default_value = "false")]
+        overwrite: bool,
+        
     },
     #[command(name = "copy", about = "Copy duplicate files to a new location")]
     CopyDuplicates {
@@ -183,6 +196,18 @@ enum Commands {
         /// Method to select the file to keep
         #[arg(short, long, default_value = "newest")]
         method: DuplicateSelectionMethod,
+
+        // do not create subdirectories in the destination
+        #[arg(short, long, default_value = "false")]
+        flatten: bool,
+
+        // do not add the hash of thie file as a folder in the destination and group the duplicates in that folder
+        #[arg(short, long, default_value = "false")]
+        no_hash_folder: bool,
+
+        // overwrite the destination file if it exists - this includes any duplicates that are copied that have the same name
+        #[arg(short, long, default_value = "false")]
+        overwrite: bool,
     },
     #[command(name = "delete", about = "Delete duplicate files")]
     DeleteDuplicates {
@@ -237,7 +262,7 @@ struct SearchResults {
 /// * `remove_file` - Remove a file.
 /// * `rename` - Rename a file.
 trait FileOperations {
-    fn copy(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
+    fn copy(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error>;
     fn remove_file(&self, source: &str) -> Result<(), std::io::Error>;
     fn rename(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
 }
@@ -251,8 +276,34 @@ struct RealFileOperations;
 
 impl FileOperations for RealFileOperations {
     #[cfg(not(tarpaulin_include))]
-    fn copy(&self, source: &str, destination: &str) -> Result<(), std::io::Error> {
-        match std::fs::copy(source, destination) {
+    fn copy(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error> {
+        let mut counter = 1;
+        let mut new_destination = destination.to_string();
+        // if overwrite is false,
+        // then if the destination file already exists, then add a counter to the filename
+        if !overwrite {
+            loop {
+                match std::path::Path::new(&new_destination).try_exists() {
+                    Ok(flag) => {
+                        if !flag {
+                            break;
+                        }
+                        let path = std::path::Path::new(destination);
+                        let parent = path.parent().unwrap().to_str().unwrap();
+                        let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                        let extension = path.extension().unwrap_or_default().to_str().unwrap();
+                        new_destination =
+                            format!("{}/{}_{}.{}", parent, file_stem, counter, extension);
+                        counter += 1;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        // copy the file
+        match std::fs::copy(source, &new_destination) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
@@ -350,7 +401,7 @@ fn main() {
     let start = Instant::now();
 
     let file_ops = RealFileOperations;
-   
+
     // Create an instance of TerminalGuard that will be dropped when main exits
     let _guard = TerminalGuard;
 
@@ -385,6 +436,8 @@ fn main() {
                     search_results.number_duplicates,
                     bytesize::ByteSize(search_results.total_size.try_into().unwrap())
                 );
+                myprintln!();
+                myprintln!();
             }
             reset_terminal();
             std::process::exit(search_results.number_duplicates.try_into().unwrap());
@@ -500,13 +553,9 @@ fn get_command_line_arguments() -> Args {
 /// * `Result<SearchResults, io::Error>` - The search results.
 /// # Errors
 /// * `io::Error` - An error occurred during the search.
-fn start_search<T: FileOperations>(
-    file_ops: &T,
-    args: &Args,
-) -> Result<SearchResults, io::Error> {
+fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchResults, io::Error> {
     // get the files in the directory
     let folder_path: String = args.shared.path.clone();
-
 
     // get the files in the directory
     // it calls itself as it traverses the tree if recursive is set
@@ -578,7 +627,6 @@ fn get_files_in_directory(
 ) -> Result<Vec<FileInfo>, io::Error> {
     let multi = multi.unwrap_or_else(progressbar::MultiProgress::new);
     let mut files: Vec<FileInfo> = Vec::new();
-    
 
     // check if the path is a directory
     match fs::metadata(folder_path.as_str()) {
@@ -641,7 +689,7 @@ fn get_files_in_directory(
     for entry in entries.iter() {
         let tx = tx.clone();
         let entry = entry.clone();
-        
+
         pool.execute(move || {
             // check if the entry is a directory
             let is_dir = entry.is_dir();
@@ -655,7 +703,6 @@ fn get_files_in_directory(
     // wait for the jobs to complete, and process the results
     let mut processed = 0;
     while processed < files_count {
-       
         match rx.try_recv() {
             Ok((entry, is_dir)) => {
                 if is_dir {
@@ -755,7 +802,6 @@ fn get_files_in_directory(
         multi.draw_all();
 
         for entry in entries.iter() {
-            
             let path = entry.as_path();
             let _ = multi.set_message(&bar2, format!("Processing: {}", path.display()).as_str());
 
@@ -872,10 +918,7 @@ fn get_files_in_directory(
 /// * `args` - The command line arguments.
 /// * `files` - The files to process.
 /// * `running` - The running flag.
-fn identify_duplicates(
-    args: &Args,
-    files: Vec<FileInfo>,
-) -> HashMap<String, Vec<FileInfo>> {
+fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     let multi = progressbar::MultiProgress::new();
     let workers = num_cpus::get();
@@ -1025,29 +1068,36 @@ fn process_duplicates<T: FileOperations>(
         if files.len() > 1 {
             new_hash_map.insert(hash.clone(), files.clone());
 
-            if args.shared.debug {
-                match &args.command {
-                    Commands::FindDuplicates { method: _ } => {
-                        let _ = multi.println(&format!("FindDuplicates: {}", hash));
-                    }
-                    Commands::MoveDuplicates {
-                        location,
-                        method: _,
-                    } => {
-                        let _ = multi.println(&format!("MoveDuplicates: {} to {}", hash, location));
-                    }
-                    Commands::CopyDuplicates {
-                        location,
-                        method: _,
-                    } => {
-                        let _ = multi.println(&format!("CopyDuplicates: {} to {}", hash, location));
-                    }
-                    Commands::DeleteDuplicates { method: _ } => {
-                        let _ = multi.println(&format!("DeleteDuplicates: {}", hash));
-                    }
-                }
-            }
+            // if args.shared.debug {
+            //     match &args.command {
+            //         Commands::FindDuplicates { method: _ } => {
+            //             let _ = multi.println(&format!("FindDuplicates: {}", hash));
+            //         }
+            //         Commands::MoveDuplicates {
+            //             location,
+            //             method: _,
+            //             flatten: _,
+            //             no_hash_folder: _,
+            //             overwrite: _,
+            //         } => {
+            //             let _ = multi.println(&format!("MoveDuplicates: {} to {}", hash, location));
+            //         }
+            //         Commands::CopyDuplicates {
+            //             location,
+            //             method: _,
+            //             flatten: _,
+            //             no_hash_folder: _,
+            //             overwrite: _,
+            //         } => {
+            //             let _ = multi.println(&format!("CopyDuplicates: {} to {}", hash, location));
+            //         }
+            //         Commands::DeleteDuplicates { method: _ } => {
+            //             let _ = multi.println(&format!("DeleteDuplicates: {}", hash));
+            //         }
+            //     }
+            // }
 
+            // if the command is FindDuplicates, then we don't need to process the duplicates
             if let Commands::FindDuplicates { .. } = args.command {
                 continue;
             }
@@ -1071,7 +1121,7 @@ fn process_duplicates<T: FileOperations>(
             }
 
             for file in dup_fileset.extras {
-                let _ = process_a_duplicate_file(file_ops, args, &file, &mut multi);
+                let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
             }
         }
         multi.increment(&bar, 1);
@@ -1090,6 +1140,7 @@ fn process_duplicates<T: FileOperations>(
 /// * `file_ops` - The file operations object.
 /// * `args` - The command line arguments.
 /// * `file` - The file to process.
+/// * `hash` - The hash of the file.
 /// * `multi` - The progress bar.
 /// * `Result<(), std::io::Error>` - The result of the operation.
 /// # Errors
@@ -1098,17 +1149,75 @@ fn process_a_duplicate_file<T: FileOperations>(
     file_ops: &T,
     args: &Args,
     file: &FileInfo,
+    hash: &str,
     multi: &mut progressbar::MultiProgress,
 ) -> Result<(), std::io::Error> {
     let source = &file.path;
-    let file_name = Path::new(&file.path).file_name().unwrap().to_str().unwrap();
+    //let file_name = Path::new(&file.path).file_name().unwrap().to_str().unwrap();
     let location = match &args.command {
         Commands::MoveDuplicates { location, .. } => location,
         Commands::CopyDuplicates { location, .. } => location,
         Commands::DeleteDuplicates { method: _ } => "",
         Commands::FindDuplicates { method: _ } => "",
     };
-    let destination = format!("{}/{}", location, file_name);
+
+    let flatten = match &args.command {
+        Commands::MoveDuplicates { flatten, .. } => *flatten,
+        Commands::CopyDuplicates { flatten, .. } => *flatten,
+        Commands::DeleteDuplicates { method: _ } => false,
+        Commands::FindDuplicates { method: _ } => false,
+    };
+
+    let no_hash_folder = match &args.command {
+        Commands::MoveDuplicates { no_hash_folder, .. } => *no_hash_folder,
+        Commands::CopyDuplicates { no_hash_folder, .. } => *no_hash_folder,
+        Commands::DeleteDuplicates { method: _ } => false,
+        Commands::FindDuplicates { method: _ } => false,
+    };
+
+    let overwrite = match &args.command {
+        Commands::MoveDuplicates { overwrite, .. } => *overwrite,
+        Commands::CopyDuplicates { overwrite, .. } => *overwrite,
+        Commands::DeleteDuplicates { method: _ } => false,
+        Commands::FindDuplicates { method: _ } => false,
+    };
+
+    let relative_path = Path::new(&file.path)
+        .strip_prefix(&args.shared.path)
+        .unwrap_or_else(|_| Path::new(&file.path))
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let mut destination_folder;
+
+    if !flatten {
+        // destination folder is the relative path of the file with the hash appended
+        destination_folder = Path::new(location)
+            .join(&relative_path)
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+    } else {
+        destination_folder = location.to_string();
+    }
+    if !no_hash_folder {
+        #[cfg(target_os = "windows")]
+        destination_folder.push_str("\\");
+        #[cfg(not(target_os = "windows"))]
+        destination_folder.push_str("/");
+        destination_folder.push_str(&hash);
+    }
+
+    let mut destination = destination_folder.clone();
+
+    #[cfg(target_os = "windows")]
+    destination.push_str("\\");
+    #[cfg(not(target_os = "windows"))]
+    destination.push_str("/");
+    destination.push_str(Path::new(&file.path).file_name().unwrap().to_str().unwrap());
 
     let command_text: String;
     let mut error: Option<std::io::Error> = None;
@@ -1150,7 +1259,16 @@ fn process_a_duplicate_file<T: FileOperations>(
                 }
             }
             Commands::CopyDuplicates { .. } => {
-                if let Err(result) = file_ops.copy(source, &destination) {
+                if let Err(result) = fs::create_dir_all(&destination_folder) {
+                    multi.eprintln(
+                        format!(
+                            "Error creating directory: {} - {}",
+                            destination_folder, result
+                        )
+                        .as_str(),
+                    );
+                }
+                if let Err(result) = file_ops.copy(source, &destination, overwrite) {
                     error = Some(result);
                 }
             }
@@ -1368,7 +1486,7 @@ mod tests {
     struct MockFileOperationsOk;
 
     impl FileOperations for MockFileOperationsOk {
-        fn copy(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn copy(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
             // Mock implementation
             Ok(())
         }
@@ -1387,7 +1505,7 @@ mod tests {
     struct MockFileOperationsError;
 
     impl FileOperations for MockFileOperationsError {
-        fn copy(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn copy(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
             // Mock implementation - produce an error
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
@@ -1429,9 +1547,8 @@ mod tests {
     #[test]
     fn test_get_files_in_directory() {
         let args = create_default_command_line_arguments();
-        
-        
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None,).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         // under windows .testhidden is not considered a hidden file
         #[cfg(target_os = "windows")]
         assert_eq!(files.len(), 6);
@@ -1443,22 +1560,20 @@ mod tests {
     fn test_get_files_in_directory_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-         // under windows .testhidden is not considered a hidden file
-         #[cfg(target_os = "windows")]
-         assert_eq!(files.len(), 6);
-         #[cfg(not(target_os = "windows"))]
-         assert_eq!(files.len(), 5);
+        // under windows .testhidden is not considered a hidden file
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 6);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(files.len(), 5);
     }
 
     #[test]
     fn test_get_files_in_directory_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.wildcard = "*testdupe*.txt".to_string();
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 4);
     }
@@ -1467,35 +1582,32 @@ mod tests {
     fn test_get_files_in_directory_exclusion_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.exclusion_wildcard = "*testdupe*.txt".to_string();
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-         // under windows .testhidden is not considered a hidden file
-         #[cfg(target_os = "windows")]
-         assert_eq!(files.len(), 2);
-         #[cfg(not(target_os = "windows"))]
-         assert_eq!(files.len(), 1);
+        // under windows .testhidden is not considered a hidden file
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 2);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(files.len(), 1);
     }
 
     #[test]
     fn test_get_files_in_directory_include_empty() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_empty_files = true;
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         #[cfg(target_os = "windows")]
-         assert_eq!(files.len(), 8);
-         #[cfg(not(target_os = "windows"))]
-         assert_eq!(files.len(), 7);
+        assert_eq!(files.len(), 8);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(files.len(), 7);
     }
 
     #[test]
     fn test_get_files_in_directory_include_hidden() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 6);
     }
@@ -1505,8 +1617,7 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
         args.shared.include_empty_files = true;
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 8);
     }
@@ -1515,13 +1626,12 @@ mod tests {
     fn test_get_files_in_directory_include_recursive() {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         #[cfg(target_os = "windows")]
-         assert_eq!(files.len(), 19);
-         #[cfg(not(target_os = "windows"))]
-         assert_eq!(files.len(), 16);
+        assert_eq!(files.len(), 19);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(files.len(), 16);
     }
 
     #[test]
@@ -1529,8 +1639,7 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
         args.shared.include_hidden_files = true;
-        
-        
+
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 19);
     }
@@ -1539,8 +1648,7 @@ mod tests {
     fn test_get_files_in_directory_bad_path() {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "badpath!!!".to_string();
-        
-        
+
         let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
         assert!(result.is_err());
     }
@@ -1548,14 +1656,9 @@ mod tests {
     #[test]
     fn test_get_files_in_directory_notafolder() {
         let args = create_default_command_line_arguments();
-        
-        
-        let result = get_files_in_directory(
-            &args,
-            format!("{}/testnodupe.txt", args.shared.path),
-            None,
-            
-        );
+
+        let result =
+            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), None);
         assert!(result.is_err());
     }
 
@@ -1584,7 +1687,7 @@ mod tests {
     fn test_start_search() {
         let args = create_default_command_line_arguments();
         let file_ops = RealFileOperations;
-        
+
         let result = start_search(&file_ops, &args);
         assert!(result.is_ok());
     }
@@ -1594,7 +1697,7 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
         let file_ops = RealFileOperations;
-        
+
         let result = start_search(&file_ops, &args);
         assert!(result.is_ok());
     }
@@ -1608,8 +1711,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
         println!("Temporary location : {}", temp_path);
-        
-        
+
         let file_ops = RealFileOperations;
         let result = start_search(&file_ops, &args);
         assert!(result.is_err());
@@ -1622,13 +1724,15 @@ mod tests {
         args.shared.dry_run = true;
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
-        
-        
+
         println!("Temporary location : {}", temp_path);
 
         args.command = Commands::CopyDuplicates {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let file_ops = RealFileOperations;
         let result = start_search(&file_ops, &args);
@@ -1641,8 +1745,7 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "data-badpath!!!".to_string();
         let file_ops = RealFileOperations;
-        
-        
+
         let result = start_search(&file_ops, &args);
         assert!(result.is_err());
     }
@@ -1655,13 +1758,15 @@ mod tests {
         args.shared.wildcard = "testnodupe.txt".to_owned();
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
-        
-        
+
         println!("Temporary location : {}", temp_path);
 
         args.command = Commands::CopyDuplicates {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let file_ops = RealFileOperations;
         let result = start_search(&file_ops, &args);
@@ -1672,7 +1777,6 @@ mod tests {
     #[test]
     fn test_identify_duplicates() {
         let args = create_default_command_line_arguments();
-        
 
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         let hash_map = identify_duplicates(&args, files);
@@ -1690,7 +1794,6 @@ mod tests {
     fn test_identify_duplicates_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-        
 
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         let hash_map = identify_duplicates(&args, files);
@@ -1707,8 +1810,6 @@ mod tests {
     #[test]
     fn test_identify_duplicates_no_files() {
         let args = create_default_command_line_arguments();
-        
-        
 
         let files = Vec::new();
         let hash_map = identify_duplicates(&args, files);
@@ -1725,8 +1826,7 @@ mod tests {
     #[test]
     fn test_identify_duplicates_badfiles() {
         let args = create_default_command_line_arguments();
-        
-        
+
         let mut files = Vec::new();
         let file = FileInfo {
             path: "todo!()".to_owned(),
@@ -1873,7 +1973,8 @@ mod tests {
         };
         // use our mock file operators - returns ok for file operations
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         // FindCommand does not operate on the file, so it always returns Ok
         assert!(result.is_ok());
     }
@@ -1892,7 +1993,8 @@ mod tests {
         };
         // use our mock file operators - returns ok for file operations
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         // FindCommand does not operate of the file, so it always returns Ok
         assert!(result.is_ok());
     }
@@ -1912,7 +2014,8 @@ mod tests {
         };
         // use our mock file operators - returns ok for file operations
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         // FindCommand does not operate of the file, so it always returns Ok
         assert!(result.is_ok());
     }
@@ -1934,7 +2037,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsError;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_err());
     }
 
@@ -1955,7 +2059,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_ok());
     }
 
@@ -1966,6 +2071,9 @@ mod tests {
         args.command = Commands::CopyDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -1977,7 +2085,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsError;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_err());
     }
 
@@ -1988,6 +2097,9 @@ mod tests {
         args.command = Commands::CopyDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -1999,7 +2111,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_ok());
     }
 
@@ -2010,6 +2123,9 @@ mod tests {
         args.command = Commands::MoveDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -2021,7 +2137,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsError;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_err());
     }
 
@@ -2032,6 +2149,9 @@ mod tests {
         args.command = Commands::MoveDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -2043,7 +2163,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_ok());
     }
 
@@ -2054,9 +2175,10 @@ mod tests {
         args.command = Commands::MoveDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
-        
-        
 
         // create a fake hash map
         let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
