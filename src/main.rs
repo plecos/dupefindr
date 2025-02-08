@@ -1432,6 +1432,10 @@ mod tests {
         
         
         let files = get_files_in_directory(&args, args.shared.path.clone(), None,).unwrap();
+        // under windows .testhidden is not considered a hidden file
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 6);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(files.len(), 5);
     }
 
@@ -1442,7 +1446,11 @@ mod tests {
         
         
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-        assert_eq!(files.len(), 5);
+         // under windows .testhidden is not considered a hidden file
+         #[cfg(target_os = "windows")]
+         assert_eq!(files.len(), 6);
+         #[cfg(not(target_os = "windows"))]
+         assert_eq!(files.len(), 5);
     }
 
     #[test]
@@ -1462,7 +1470,11 @@ mod tests {
         
         
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-        assert_eq!(files.len(), 1);
+         // under windows .testhidden is not considered a hidden file
+         #[cfg(target_os = "windows")]
+         assert_eq!(files.len(), 2);
+         #[cfg(not(target_os = "windows"))]
+         assert_eq!(files.len(), 1);
     }
 
     #[test]
@@ -1472,7 +1484,10 @@ mod tests {
         
         
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-        assert_eq!(files.len(), 7);
+        #[cfg(target_os = "windows")]
+         assert_eq!(files.len(), 8);
+         #[cfg(not(target_os = "windows"))]
+         assert_eq!(files.len(), 7);
     }
 
     #[test]
@@ -1503,7 +1518,10 @@ mod tests {
         
         
         let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
-        assert_eq!(files.len(), 16);
+        #[cfg(target_os = "windows")]
+         assert_eq!(files.len(), 19);
+         #[cfg(not(target_os = "windows"))]
+         assert_eq!(files.len(), 16);
     }
 
     #[test]
@@ -1549,7 +1567,7 @@ mod tests {
             &progressbar::ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_ok());
-        assert_eq!(hash.unwrap(), "8c91214730e59f67bd46d1855156e762");
+        assert_eq!(hash.unwrap(), "710c2d261165da2eac0e2321ea9ddbed");
     }
 
     #[test]
