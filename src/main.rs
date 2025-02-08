@@ -139,6 +139,13 @@ struct SharedOptions {
     /// Display verbose output
     #[arg(short, long, default_value = "false")]
     verbose: bool,
+
+    /// Max threads to use
+    /// Example: 4
+    /// Default: Number of CPUs
+    /// If set to 0, then it will use the number of CPUs
+    #[arg(short, long, default_value = "0")]
+    max_threads: Option<usize>,
 }
 
 /// # Duplicate Selection Method
@@ -570,6 +577,20 @@ fn get_command_line_arguments() -> Args {
     args
 }
 
+/// # get_number_of_threads
+/// Get the number of threads to use for thread pools
+/// * `args` - The command line arguments.
+/// * `usize` - The number of threads to use.
+fn get_number_of_threads(args: &Args) -> usize {
+    let default_parallelism_approx = num_cpus::get();
+    let max_threads = args.shared.max_threads.unwrap_or(0);
+    if max_threads == 0 {
+        default_parallelism_approx
+    } else {
+        max_threads
+    }
+}
+
 /// # start_search
 /// Start the search for duplicate files.
 /// * `file_ops` - The file operations object.
@@ -700,7 +721,7 @@ fn get_files_in_directory(
     let mut folder_count = 0;
     let mut file_count = 0;
     let mut folders: Vec<PathBuf> = Vec::new();
-    let workers = num_cpus::get();
+    let workers = get_number_of_threads(args);
     let pool = ThreadPool::new(workers);
     let (tx, rx) = channel();
     let files_count = entries.len();
@@ -946,7 +967,7 @@ fn get_files_in_directory(
 fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     let multi = progressbar::MultiProgress::new();
-    let workers = num_cpus::get();
+    let workers = get_number_of_threads(args);
 
     let bar2 = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
@@ -1558,6 +1579,7 @@ mod tests {
             quiet: false,
             wildcard: "*".to_string(),
             exclusion_wildcard: "".to_string(),
+            max_threads: Some(0),
         };
         let s1 = shared_options.clone();
         let args = Args {
@@ -1706,6 +1728,22 @@ mod tests {
             &progressbar::ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_err());
+    }
+
+    #[test]
+    fn test_get_number_of_threads_with_max_threads_0() {
+        let args = create_default_command_line_arguments();
+        let threads = get_number_of_threads(&args);
+        let num_cpus = num_cpus::get();
+        assert_eq!(threads, num_cpus);
+    }
+
+    #[test]
+    fn test_get_number_of_threads_with_max_threads_2() {
+        let mut args = create_default_command_line_arguments();
+        args.shared.max_threads = Some(2);
+        let threads = get_number_of_threads(&args);
+        assert_eq!(threads, 2);
     }
 
     #[test]
