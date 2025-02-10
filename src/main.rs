@@ -67,6 +67,7 @@ use md5::{self, Digest};
 use progressbar::AddLocation;
 use std::collections::HashMap;
 use std::io::{self, stdout, Read, Write};
+#[cfg(target_os = "windows")]
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
@@ -781,7 +782,7 @@ fn get_files_in_directory(
 
         for fld in folders.iter() {
             multi.set_message(&bar2, format!("Folder {}", fld.display()).as_str());
-            let mut hidden: bool = false;
+            let hidden;
             // check if the folder is hidden - use appropriate code for the OS
             #[cfg(not(target_os = "windows"))]
             {
@@ -883,7 +884,7 @@ fn get_files_in_directory(
                 }
 
                 // check if file is hidden using appropriate code for the OS
-                let mut hidden: bool = false;
+                let hidden: bool ;
                 #[cfg(not(target_os = "windows"))]
                 {
                     hidden = path.file_name().unwrap().to_str().unwrap().starts_with(".");
