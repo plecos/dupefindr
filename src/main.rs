@@ -193,7 +193,6 @@ enum Commands {
         // overwrite the destination file if it exists - this includes any duplicates that are copied that have the same name
         #[arg(short, long, default_value = "false")]
         overwrite: bool,
-        
     },
     #[command(name = "copy", about = "Copy duplicate files to a new location")]
     CopyDuplicates {
@@ -272,7 +271,12 @@ struct SearchResults {
 trait FileOperations {
     fn copy(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error>;
     fn remove_file(&self, source: &str) -> Result<(), std::io::Error>;
-    fn rename(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error>;
+    fn rename(
+        &self,
+        source: &str,
+        destination: &str,
+        overwrite: bool,
+    ) -> Result<(), std::io::Error>;
 }
 
 /// # RealFileOperations
@@ -324,7 +328,12 @@ impl FileOperations for RealFileOperations {
         }
     }
     #[cfg(not(tarpaulin_include))]
-    fn rename(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error> {
+    fn rename(
+        &self,
+        source: &str,
+        destination: &str,
+        overwrite: bool,
+    ) -> Result<(), std::io::Error> {
         let mut counter = 1;
         let mut new_destination = destination.to_string();
         // if overwrite is false,
@@ -884,7 +893,7 @@ fn get_files_in_directory(
                 }
 
                 // check if file is hidden using appropriate code for the OS
-                let hidden: bool ;
+                let hidden: bool;
                 #[cfg(not(target_os = "windows"))]
                 {
                     hidden = path.file_name().unwrap().to_str().unwrap().starts_with(".");
@@ -1369,7 +1378,12 @@ fn get_hash_of_file(
                 if bytes_read == 0 {
                     break;
                 }
-                hasher.update(&buffer[..bytes_read]);
+                // Normalize line endings by replacing \r\n with \n
+                let normalized_buffer: Vec<u8> = buffer[..bytes_read]
+                    .iter()
+                    .flat_map(|&b| if b == b'\r' { None } else { Some(b) })
+                    .collect();
+                hasher.update(&normalized_buffer);
             }
 
             let hash = hasher.finalize();
@@ -1533,7 +1547,12 @@ mod tests {
     struct MockFileOperationsOk;
 
     impl FileOperations for MockFileOperationsOk {
-        fn copy(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
+        fn copy(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation
             Ok(())
         }
@@ -1543,7 +1562,12 @@ mod tests {
             Ok(())
         }
 
-        fn rename(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
+        fn rename(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation
             Ok(())
         }
@@ -1552,7 +1576,12 @@ mod tests {
     struct MockFileOperationsError;
 
     impl FileOperations for MockFileOperationsError {
-        fn copy(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
+        fn copy(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation - produce an error
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
@@ -1562,7 +1591,12 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
 
-        fn rename(&self, _source: &str, _destination: &str, _overwrite: bool) -> Result<(), std::io::Error> {
+        fn rename(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation - produce an error
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
@@ -1718,7 +1752,8 @@ mod tests {
             &progressbar::ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_ok());
-        assert_eq!(hash.unwrap(), "710c2d261165da2eac0e2321ea9ddbed");
+        assert_eq!(hash.unwrap(),"8c91214730e59f67bd46d1855156e762");
+        //assert_eq!(hash.unwrap(), "710c2d261165da2eac0e2321ea9ddbed");
     }
 
     #[test]
