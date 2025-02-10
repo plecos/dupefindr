@@ -40,6 +40,10 @@ Options:
 
 Do not remove the testdata folder or alter it in any way. This is used by the tests
 
+# KNOWN ISSUES
+
+- [Sometimes the progress display can get messy, especially if there are lot of subfolders and files.](https://github.com/plecos/dupefindr/issues/3) 
+
 ## Building from source
 
 ### Prerequistes
@@ -47,6 +51,11 @@ Do not remove the testdata folder or alter it in any way. This is used by the te
 If you haven't installed Rust before, please install the Rust Development Environment by following the directions here:
 
 [Install Rust](https://www.rust-lang.org/tools/install)
+
+If you see errors during build referring to "linker cc not found", you probably need to install build tools
+for your OS.  
+
+[For more information](https://achmadhadikurnia.com/blog/how-to-fix-error-linker-cc-not-found-when-compiling-a-rust-application)
 
 ### Release
 

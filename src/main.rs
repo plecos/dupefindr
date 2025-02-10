@@ -67,6 +67,8 @@ use md5::{self, Digest};
 use progressbar::AddLocation;
 use std::collections::HashMap;
 use std::io::{self, stdout, Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::thread::yield_now;
@@ -76,6 +78,8 @@ use std::{fs, thread};
 use threadpool::ThreadPool;
 
 mod progressbar;
+
+const BUFFER_READ_SIZE: usize = 1024 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "Dupefindr", version)]
@@ -136,6 +140,13 @@ struct SharedOptions {
     /// Display verbose output
     #[arg(short, long, default_value = "false")]
     verbose: bool,
+
+    /// Max threads to use
+    /// Example: 4
+    /// Default: Number of CPUs
+    /// If set to 0, then it will use the number of CPUs
+    #[arg(short, long, default_value = "0")]
+    max_threads: Option<usize>,
 }
 
 /// # Duplicate Selection Method
@@ -170,6 +181,18 @@ enum Commands {
         /// Example: newest, oldest, largest, smallest
         #[arg(short, long, default_value = "newest")]
         method: DuplicateSelectionMethod,
+
+        // do not create subdirectories in the destination
+        #[arg(short, long, default_value = "false")]
+        flatten: bool,
+
+        // do not add the hash of thie file as a folder in the destination and group the duplicates in that folder
+        #[arg(short, long, default_value = "false")]
+        no_hash_folder: bool,
+
+        // overwrite the destination file if it exists - this includes any duplicates that are copied that have the same name
+        #[arg(short, long, default_value = "false")]
+        overwrite: bool,
     },
     #[command(name = "copy", about = "Copy duplicate files to a new location")]
     CopyDuplicates {
@@ -180,6 +203,18 @@ enum Commands {
         /// Method to select the file to keep
         #[arg(short, long, default_value = "newest")]
         method: DuplicateSelectionMethod,
+
+        // do not create subdirectories in the destination
+        #[arg(short, long, default_value = "false")]
+        flatten: bool,
+
+        // do not add the hash of thie file as a folder in the destination and group the duplicates in that folder
+        #[arg(short, long, default_value = "false")]
+        no_hash_folder: bool,
+
+        // overwrite the destination file if it exists - this includes any duplicates that are copied that have the same name
+        #[arg(short, long, default_value = "false")]
+        overwrite: bool,
     },
     #[command(name = "delete", about = "Delete duplicate files")]
     DeleteDuplicates {
@@ -234,9 +269,14 @@ struct SearchResults {
 /// * `remove_file` - Remove a file.
 /// * `rename` - Rename a file.
 trait FileOperations {
-    fn copy(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
+    fn copy(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error>;
     fn remove_file(&self, source: &str) -> Result<(), std::io::Error>;
-    fn rename(&self, source: &str, destination: &str) -> Result<(), std::io::Error>;
+    fn rename(
+        &self,
+        source: &str,
+        destination: &str,
+        overwrite: bool,
+    ) -> Result<(), std::io::Error>;
 }
 
 /// # RealFileOperations
@@ -248,8 +288,34 @@ struct RealFileOperations;
 
 impl FileOperations for RealFileOperations {
     #[cfg(not(tarpaulin_include))]
-    fn copy(&self, source: &str, destination: &str) -> Result<(), std::io::Error> {
-        match std::fs::copy(source, destination) {
+    fn copy(&self, source: &str, destination: &str, overwrite: bool) -> Result<(), std::io::Error> {
+        let mut counter = 1;
+        let mut new_destination = destination.to_string();
+        // if overwrite is false,
+        // then if the destination file already exists, then add a counter to the filename
+        if !overwrite {
+            loop {
+                match std::path::Path::new(&new_destination).try_exists() {
+                    Ok(flag) => {
+                        if !flag {
+                            break;
+                        }
+                        let path = std::path::Path::new(destination);
+                        let parent = path.parent().unwrap().to_str().unwrap();
+                        let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                        let extension = path.extension().unwrap_or_default().to_str().unwrap();
+                        new_destination =
+                            format!("{}/{}_{}.{}", parent, file_stem, counter, extension);
+                        counter += 1;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        // copy the file
+        match std::fs::copy(source, &new_destination) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
@@ -262,8 +328,38 @@ impl FileOperations for RealFileOperations {
         }
     }
     #[cfg(not(tarpaulin_include))]
-    fn rename(&self, source: &str, destination: &str) -> Result<(), std::io::Error> {
-        match std::fs::rename(source, destination) {
+    fn rename(
+        &self,
+        source: &str,
+        destination: &str,
+        overwrite: bool,
+    ) -> Result<(), std::io::Error> {
+        let mut counter = 1;
+        let mut new_destination = destination.to_string();
+        // if overwrite is false,
+        // then if the destination file already exists, then add a counter to the filename
+        if !overwrite {
+            loop {
+                match std::path::Path::new(&new_destination).try_exists() {
+                    Ok(flag) => {
+                        if !flag {
+                            break;
+                        }
+                        let path = std::path::Path::new(destination);
+                        let parent = path.parent().unwrap().to_str().unwrap();
+                        let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                        let extension = path.extension().unwrap_or_default().to_str().unwrap();
+                        new_destination =
+                            format!("{}/{}_{}.{}", parent, file_stem, counter, extension);
+                        counter += 1;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        match std::fs::rename(source, new_destination) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
@@ -347,8 +443,6 @@ fn main() {
     let start = Instant::now();
 
     let file_ops = RealFileOperations;
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let r = running.clone();
 
     // Create an instance of TerminalGuard that will be dropped when main exits
     let _guard = TerminalGuard;
@@ -370,9 +464,9 @@ fn main() {
 
     let args = get_command_line_arguments();
 
-    setup_ctrlc_handler(args.shared.debug, r.clone());
+    setup_ctrlc_handler();
 
-    match start_search(&file_ops, &args, r) {
+    match start_search(&file_ops, &args) {
         Ok(search_results) => {
             let duration = start.elapsed();
             myprintln!("Elapsed time: {}", humantime::format_duration(duration));
@@ -384,6 +478,8 @@ fn main() {
                     search_results.number_duplicates,
                     bytesize::ByteSize(search_results.total_size.try_into().unwrap())
                 );
+                myprintln!();
+                myprintln!();
             }
             reset_terminal();
             std::process::exit(search_results.number_duplicates.try_into().unwrap());
@@ -411,7 +507,7 @@ fn print_banner() {
 
 /// # setup_ctrlc_handler
 /// Function to setup the ctrl-c handler.
-fn setup_ctrlc_handler(debug: bool, running: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+fn setup_ctrlc_handler() {
     // spawn a thread that will get key events and check for ctrl-c
     std::thread::spawn(move || -> Result<(), anyhow::Error> {
         loop {
@@ -423,11 +519,8 @@ fn setup_ctrlc_handler(debug: bool, running: std::sync::Arc<std::sync::atomic::A
                             .modifiers
                             .contains(crossterm::event::KeyModifiers::CONTROL)
                     {
-                        // signal by settting our AtomicBool to false
-                        running.store(false, std::sync::atomic::Ordering::SeqCst);
-                        if debug {
-                            myprintln!("CTRL-C detected");
-                        }
+                        myeprintln!("CTRL-C detected - program terminated.");
+                        std::process::exit(-1);
                     }
                 }
             } else {
@@ -494,6 +587,20 @@ fn get_command_line_arguments() -> Args {
     args
 }
 
+/// # get_number_of_threads
+/// Get the number of threads to use for thread pools
+/// * `args` - The command line arguments.
+/// * `usize` - The number of threads to use.
+fn get_number_of_threads(args: &Args) -> usize {
+    let default_parallelism_approx = num_cpus::get();
+    let max_threads = args.shared.max_threads.unwrap_or(0);
+    if max_threads == 0 {
+        default_parallelism_approx
+    } else {
+        max_threads
+    }
+}
+
 /// # start_search
 /// Start the search for duplicate files.
 /// * `file_ops` - The file operations object.
@@ -502,21 +609,13 @@ fn get_command_line_arguments() -> Args {
 /// * `Result<SearchResults, io::Error>` - The search results.
 /// # Errors
 /// * `io::Error` - An error occurred during the search.
-fn start_search<T: FileOperations>(
-    file_ops: &T,
-    args: &Args,
-    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<SearchResults, io::Error> {
+fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchResults, io::Error> {
     // get the files in the directory
     let folder_path: String = args.shared.path.clone();
-    // these are used to pass the running flag to the functions
-    let r1 = running.clone();
-    let r2 = running.clone();
-    let r3 = running.clone();
 
     // get the files in the directory
     // it calls itself as it traverses the tree if recursive is set
-    let result = get_files_in_directory(args, folder_path, None, r1);
+    let result = get_files_in_directory(args, folder_path, None);
     let files = match result {
         Ok(files) => files,
         Err(e) => {
@@ -529,9 +628,9 @@ fn start_search<T: FileOperations>(
     }
 
     // identify the duplicates
-    let full_hash_map = identify_duplicates(args, files, r2);
+    let full_hash_map = identify_duplicates(args, files);
     // process the duplicates
-    let hash_map = process_duplicates(file_ops, args, &full_hash_map, r3);
+    let hash_map = process_duplicates(file_ops, args, &full_hash_map);
 
     // print the duplicate results
     let duplicates_found = hash_map.len();
@@ -581,15 +680,9 @@ fn get_files_in_directory(
     args: &Args,
     folder_path: String,
     multi: Option<progressbar::MultiProgress>,
-    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<FileInfo>, io::Error> {
     let multi = multi.unwrap_or_else(progressbar::MultiProgress::new);
     let mut files: Vec<FileInfo> = Vec::new();
-    let running2 = running.clone();
-
-    if running.load(std::sync::atomic::Ordering::SeqCst) == false {
-        return Err(io::Error::new(io::ErrorKind::Other, "Program terminated"));
-    }
 
     // check if the path is a directory
     match fs::metadata(folder_path.as_str()) {
@@ -638,7 +731,7 @@ fn get_files_in_directory(
     let mut folder_count = 0;
     let mut file_count = 0;
     let mut folders: Vec<PathBuf> = Vec::new();
-    let workers = num_cpus::get();
+    let workers = get_number_of_threads(args);
     let pool = ThreadPool::new(workers);
     let (tx, rx) = channel();
     let files_count = entries.len();
@@ -652,12 +745,9 @@ fn get_files_in_directory(
     for entry in entries.iter() {
         let tx = tx.clone();
         let entry = entry.clone();
-        let running = running.clone();
+
         pool.execute(move || {
             // check if the entry is a directory
-            if running.load(std::sync::atomic::Ordering::SeqCst) == false {
-                return;
-            }
             let is_dir = entry.is_dir();
             tx.send((entry, is_dir)).unwrap_or_default();
         });
@@ -669,10 +759,6 @@ fn get_files_in_directory(
     // wait for the jobs to complete, and process the results
     let mut processed = 0;
     while processed < files_count {
-        // check if the program is still running
-        if !running.load(std::sync::atomic::Ordering::SeqCst) {
-            return Ok(files);
-        }
         match rx.try_recv() {
             Ok((entry, is_dir)) => {
                 if is_dir {
@@ -694,11 +780,6 @@ fn get_files_in_directory(
         }
     }
 
-    // check if the program is still running
-    if !running.load(std::sync::atomic::Ordering::SeqCst) {
-        return Ok(files);
-    }
-
     // process the folders
     if folder_count != 0 {
         let bar2 = if args.shared.quiet {
@@ -710,7 +791,7 @@ fn get_files_in_directory(
 
         for fld in folders.iter() {
             multi.set_message(&bar2, format!("Folder {}", fld.display()).as_str());
-            let hidden: bool;
+            let hidden;
             // check if the folder is hidden - use appropriate code for the OS
             #[cfg(not(target_os = "windows"))]
             {
@@ -718,13 +799,13 @@ fn get_files_in_directory(
             }
             #[cfg(target_os = "windows")]
             {
-                if std::fs::metadata(&path)
-                    .unwrap()
-                    .file_attributes()
-                    .hidden()
-                    .unwrap()
-                {
+                let md = std::fs::metadata(fld);
+                let fa = md.unwrap().file_attributes();
+                if fa & 0x00000002 != 0 {
                     hidden = true;
+                }
+                else {
+                    hidden = false;
                 }
             }
 
@@ -758,7 +839,6 @@ fn get_files_in_directory(
                     args,
                     path.to_str().unwrap().to_string(),
                     Some(multi.clone()),
-                    running2.clone(),
                 )?;
                 // add results to our files vector
                 files.extend(sub_files);
@@ -781,10 +861,6 @@ fn get_files_in_directory(
         multi.draw_all();
 
         for entry in entries.iter() {
-            // check if the program is still running
-            if !running.load(std::sync::atomic::Ordering::SeqCst) {
-                break;
-            }
             let path = entry.as_path();
             let _ = multi.set_message(&bar2, format!("Processing: {}", path.display()).as_str());
 
@@ -827,13 +903,11 @@ fn get_files_in_directory(
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    if std::fs::metadata(&path)
-                        .unwrap()
-                        .file_attributes()
-                        .hidden()
-                        .unwrap()
-                    {
+                    if std::fs::metadata(&path).unwrap().file_attributes() & 0x00000002 != 0 {
                         hidden = true;
+                    }
+                    else {
+                        hidden = false;
                     }
                 }
                 if args.shared.include_hidden_files == false && hidden {
@@ -906,14 +980,10 @@ fn get_files_in_directory(
 /// * `args` - The command line arguments.
 /// * `files` - The files to process.
 /// * `running` - The running flag.
-fn identify_duplicates(
-    args: &Args,
-    files: Vec<FileInfo>,
-    _running: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> HashMap<String, Vec<FileInfo>> {
+fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
     let multi = progressbar::MultiProgress::new();
-    let workers = num_cpus::get();
+    let workers = get_number_of_threads(args);
 
     let bar2 = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
@@ -1012,7 +1082,6 @@ fn process_duplicates<T: FileOperations>(
     file_ops: &T,
     args: &Args,
     hash_map: &HashMap<String, Vec<FileInfo>>,
-    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> HashMap<String, Vec<FileInfo>> {
     let mut new_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
@@ -1057,36 +1126,40 @@ fn process_duplicates<T: FileOperations>(
 
     // get list of files to process
     for (hash, files) in hash_map.iter() {
-        if !running.load(std::sync::atomic::Ordering::SeqCst) {
-            break;
-        }
         // if there is only one file, then it isn't a duplicate
         if files.len() > 1 {
             new_hash_map.insert(hash.clone(), files.clone());
 
-            if args.shared.debug {
-                match &args.command {
-                    Commands::FindDuplicates { method: _ } => {
-                        let _ = multi.println(&format!("FindDuplicates: {}", hash));
-                    }
-                    Commands::MoveDuplicates {
-                        location,
-                        method: _,
-                    } => {
-                        let _ = multi.println(&format!("MoveDuplicates: {} to {}", hash, location));
-                    }
-                    Commands::CopyDuplicates {
-                        location,
-                        method: _,
-                    } => {
-                        let _ = multi.println(&format!("CopyDuplicates: {} to {}", hash, location));
-                    }
-                    Commands::DeleteDuplicates { method: _ } => {
-                        let _ = multi.println(&format!("DeleteDuplicates: {}", hash));
-                    }
-                }
-            }
+            // if args.shared.debug {
+            //     match &args.command {
+            //         Commands::FindDuplicates { method: _ } => {
+            //             let _ = multi.println(&format!("FindDuplicates: {}", hash));
+            //         }
+            //         Commands::MoveDuplicates {
+            //             location,
+            //             method: _,
+            //             flatten: _,
+            //             no_hash_folder: _,
+            //             overwrite: _,
+            //         } => {
+            //             let _ = multi.println(&format!("MoveDuplicates: {} to {}", hash, location));
+            //         }
+            //         Commands::CopyDuplicates {
+            //             location,
+            //             method: _,
+            //             flatten: _,
+            //             no_hash_folder: _,
+            //             overwrite: _,
+            //         } => {
+            //             let _ = multi.println(&format!("CopyDuplicates: {} to {}", hash, location));
+            //         }
+            //         Commands::DeleteDuplicates { method: _ } => {
+            //             let _ = multi.println(&format!("DeleteDuplicates: {}", hash));
+            //         }
+            //     }
+            // }
 
+            // if the command is FindDuplicates, then we don't need to process the duplicates
             if let Commands::FindDuplicates { .. } = args.command {
                 continue;
             }
@@ -1110,7 +1183,7 @@ fn process_duplicates<T: FileOperations>(
             }
 
             for file in dup_fileset.extras {
-                let _ = process_a_duplicate_file(file_ops, args, &file, &mut multi);
+                let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
             }
         }
         multi.increment(&bar, 1);
@@ -1129,6 +1202,7 @@ fn process_duplicates<T: FileOperations>(
 /// * `file_ops` - The file operations object.
 /// * `args` - The command line arguments.
 /// * `file` - The file to process.
+/// * `hash` - The hash of the file.
 /// * `multi` - The progress bar.
 /// * `Result<(), std::io::Error>` - The result of the operation.
 /// # Errors
@@ -1137,17 +1211,75 @@ fn process_a_duplicate_file<T: FileOperations>(
     file_ops: &T,
     args: &Args,
     file: &FileInfo,
+    hash: &str,
     multi: &mut progressbar::MultiProgress,
 ) -> Result<(), std::io::Error> {
     let source = &file.path;
-    let file_name = Path::new(&file.path).file_name().unwrap().to_str().unwrap();
+    //let file_name = Path::new(&file.path).file_name().unwrap().to_str().unwrap();
     let location = match &args.command {
         Commands::MoveDuplicates { location, .. } => location,
         Commands::CopyDuplicates { location, .. } => location,
         Commands::DeleteDuplicates { method: _ } => "",
         Commands::FindDuplicates { method: _ } => "",
     };
-    let destination = format!("{}/{}", location, file_name);
+
+    let flatten = match &args.command {
+        Commands::MoveDuplicates { flatten, .. } => *flatten,
+        Commands::CopyDuplicates { flatten, .. } => *flatten,
+        Commands::DeleteDuplicates { method: _ } => false,
+        Commands::FindDuplicates { method: _ } => false,
+    };
+
+    let no_hash_folder = match &args.command {
+        Commands::MoveDuplicates { no_hash_folder, .. } => *no_hash_folder,
+        Commands::CopyDuplicates { no_hash_folder, .. } => *no_hash_folder,
+        Commands::DeleteDuplicates { method: _ } => false,
+        Commands::FindDuplicates { method: _ } => false,
+    };
+
+    let overwrite = match &args.command {
+        Commands::MoveDuplicates { overwrite, .. } => *overwrite,
+        Commands::CopyDuplicates { overwrite, .. } => *overwrite,
+        Commands::DeleteDuplicates { method: _ } => false,
+        Commands::FindDuplicates { method: _ } => false,
+    };
+
+    let relative_path = Path::new(&file.path)
+        .strip_prefix(&args.shared.path)
+        .unwrap_or_else(|_| Path::new(&file.path))
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let mut destination_folder;
+
+    if !flatten {
+        // destination folder is the relative path of the file with the hash appended
+        destination_folder = Path::new(location)
+            .join(&relative_path)
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+    } else {
+        destination_folder = location.to_string();
+    }
+    if !no_hash_folder {
+        #[cfg(target_os = "windows")]
+        destination_folder.push_str("\\");
+        #[cfg(not(target_os = "windows"))]
+        destination_folder.push_str("/");
+        destination_folder.push_str(&hash);
+    }
+
+    let mut destination = destination_folder.clone();
+
+    #[cfg(target_os = "windows")]
+    destination.push_str("\\");
+    #[cfg(not(target_os = "windows"))]
+    destination.push_str("/");
+    destination.push_str(Path::new(&file.path).file_name().unwrap().to_str().unwrap());
 
     let command_text: String;
     let mut error: Option<std::io::Error> = None;
@@ -1184,12 +1316,21 @@ fn process_a_duplicate_file<T: FileOperations>(
         match args.command {
             Commands::FindDuplicates { .. } => {}
             Commands::MoveDuplicates { .. } => {
-                if let Err(result) = file_ops.rename(source, &destination) {
+                if let Err(result) = file_ops.rename(source, &destination, overwrite) {
                     error = Some(result);
                 }
             }
             Commands::CopyDuplicates { .. } => {
-                if let Err(result) = file_ops.copy(source, &destination) {
+                if let Err(result) = fs::create_dir_all(&destination_folder) {
+                    multi.eprintln(
+                        format!(
+                            "Error creating directory: {} - {}",
+                            destination_folder, result
+                        )
+                        .as_str(),
+                    );
+                }
+                if let Err(result) = file_ops.copy(source, &destination, overwrite) {
                     error = Some(result);
                 }
             }
@@ -1233,11 +1374,26 @@ fn get_hash_of_file(
 ) -> Result<String, std::io::Error> {
     let result = std::fs::File::open(file_path);
     match result {
-        Ok(_) => {
-            let mut file = std::fs::File::open(file_path).unwrap();
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer).unwrap();
-            Ok(get_md5_hash(&buffer))
+        Ok(mut f) => {
+            //let mut file = std::fs::File::open(file_path).unwrap();
+            let mut hasher = md5::Md5::new();
+            let mut buffer = [0; BUFFER_READ_SIZE]; // Read in chunks
+
+            loop {
+                let bytes_read = f.read(&mut buffer)?;
+                if bytes_read == 0 {
+                    break;
+                }
+                // Normalize line endings by replacing \r\n with \n
+                let normalized_buffer: Vec<u8> = buffer[..bytes_read]
+                    .iter()
+                    .flat_map(|&b| if b == b'\r' { None } else { Some(b) })
+                    .collect();
+                hasher.update(&normalized_buffer);
+            }
+
+            let hash = hasher.finalize();
+            Ok(format!("{:x}", hash))
         }
         Err(e) => {
             myeprintln!("{}", format!("{:?}", e));
@@ -1251,12 +1407,12 @@ fn get_hash_of_file(
 /// * `buffer` - The buffer to hash.
 /// # Returns
 /// * `String` - The MD5 hash.
-fn get_md5_hash(buffer: &Vec<u8>) -> String {
-    let mut hasher = md5::Md5::new();
-    hasher.update(&buffer);
-    let hash = hasher.finalize();
-    format!("{:x}", hash)
-}
+// fn get_md5_hash(buffer: &Vec<u8>) -> String {
+//     let mut hasher = md5::Md5::new();
+//     hasher.update(&buffer);
+//     let hash = hasher.finalize();
+//     format!("{:x}", hash)
+// }
 
 /// # select_duplicate_files
 /// Select the duplicate files based on the method specified in the command line arguments
@@ -1397,7 +1553,12 @@ mod tests {
     struct MockFileOperationsOk;
 
     impl FileOperations for MockFileOperationsOk {
-        fn copy(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn copy(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation
             Ok(())
         }
@@ -1407,7 +1568,12 @@ mod tests {
             Ok(())
         }
 
-        fn rename(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn rename(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation
             Ok(())
         }
@@ -1416,7 +1582,12 @@ mod tests {
     struct MockFileOperationsError;
 
     impl FileOperations for MockFileOperationsError {
-        fn copy(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn copy(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation - produce an error
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
@@ -1426,7 +1597,12 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
 
-        fn rename(&self, _source: &str, _destination: &str) -> Result<(), std::io::Error> {
+        fn rename(
+            &self,
+            _source: &str,
+            _destination: &str,
+            _overwrite: bool,
+        ) -> Result<(), std::io::Error> {
             // Mock implementation - produce an error
             Err(io::Error::new(io::ErrorKind::Other, "Mock error"))
         }
@@ -1444,6 +1620,7 @@ mod tests {
             quiet: false,
             wildcard: "*".to_string(),
             exclusion_wildcard: "".to_string(),
+            max_threads: Some(0),
         };
         let s1 = shared_options.clone();
         let args = Args {
@@ -1458,9 +1635,12 @@ mod tests {
     #[test]
     fn test_get_files_in_directory() {
         let args = create_default_command_line_arguments();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        // under windows .testhidden is not considered a hidden file
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 6);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(files.len(), 5);
     }
 
@@ -1468,9 +1648,12 @@ mod tests {
     fn test_get_files_in_directory_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        // under windows .testhidden is not considered a hidden file
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 6);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(files.len(), 5);
     }
 
@@ -1478,9 +1661,8 @@ mod tests {
     fn test_get_files_in_directory_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.wildcard = "*testdupe*.txt".to_string();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 4);
     }
 
@@ -1488,9 +1670,12 @@ mod tests {
     fn test_get_files_in_directory_exclusion_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.exclusion_wildcard = "*testdupe*.txt".to_string();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        // under windows .testhidden is not considered a hidden file
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 2);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(files.len(), 1);
     }
 
@@ -1498,9 +1683,11 @@ mod tests {
     fn test_get_files_in_directory_include_empty() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_empty_files = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 8);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(files.len(), 7);
     }
 
@@ -1508,9 +1695,8 @@ mod tests {
     fn test_get_files_in_directory_include_hidden() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 6);
     }
 
@@ -1519,9 +1705,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
         args.shared.include_empty_files = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 8);
     }
 
@@ -1529,9 +1714,11 @@ mod tests {
     fn test_get_files_in_directory_include_recursive() {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        #[cfg(target_os = "windows")]
+        assert_eq!(files.len(), 19);
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(files.len(), 16);
     }
 
@@ -1540,9 +1727,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
         args.shared.include_hidden_files = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r).unwrap();
+
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
         assert_eq!(files.len(), 19);
     }
 
@@ -1550,23 +1736,17 @@ mod tests {
     fn test_get_files_in_directory_bad_path() {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "badpath!!!".to_string();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let result = get_files_in_directory(&args, "badpath!!!".to_string(), None, r);
+
+        let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_files_in_directory_notafolder() {
         let args = create_default_command_line_arguments();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let result = get_files_in_directory(
-            &args,
-            format!("{}/testnodupe.txt", args.shared.path),
-            None,
-            r,
-        );
+
+        let result =
+            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), None);
         assert!(result.is_err());
     }
 
@@ -1578,7 +1758,8 @@ mod tests {
             &progressbar::ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_ok());
-        assert_eq!(hash.unwrap(), "8c91214730e59f67bd46d1855156e762");
+        assert_eq!(hash.unwrap(),"8c91214730e59f67bd46d1855156e762");
+        //assert_eq!(hash.unwrap(), "710c2d261165da2eac0e2321ea9ddbed");
     }
 
     #[test]
@@ -1592,25 +1773,27 @@ mod tests {
     }
 
     #[test]
-    fn test_get_md5_hash() {
-        let buffer = "Hello, world!".as_bytes().to_vec();
-        let hash = get_md5_hash(&buffer);
-        assert_eq!(hash, "6cd3556deb0da54bca060b4c39479839");
+    fn test_get_number_of_threads_with_max_threads_0() {
+        let args = create_default_command_line_arguments();
+        let threads = get_number_of_threads(&args);
+        let num_cpus = num_cpus::get();
+        assert_eq!(threads, num_cpus);
     }
 
     #[test]
-    fn test_get_md5_hash_empty() {
-        let buffer = "".as_bytes().to_vec();
-        let hash = get_md5_hash(&buffer);
-        assert_eq!(hash, "d41d8cd98f00b204e9800998ecf8427e");
+    fn test_get_number_of_threads_with_max_threads_2() {
+        let mut args = create_default_command_line_arguments();
+        args.shared.max_threads = Some(2);
+        let threads = get_number_of_threads(&args);
+        assert_eq!(threads, 2);
     }
 
     #[test]
     fn test_start_search() {
         let args = create_default_command_line_arguments();
         let file_ops = RealFileOperations;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let result = start_search(&file_ops, &args, running);
+
+        let result = start_search(&file_ops, &args);
         assert!(result.is_ok());
     }
 
@@ -1619,8 +1802,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
         let file_ops = RealFileOperations;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let result = start_search(&file_ops, &args, running);
+
+        let result = start_search(&file_ops, &args);
         assert!(result.is_ok());
     }
 
@@ -1633,10 +1816,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
         println!("Temporary location : {}", temp_path);
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
+
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args, r);
+        let result = start_search(&file_ops, &args);
         assert!(result.is_err());
     }
 
@@ -1647,16 +1829,18 @@ mod tests {
         args.shared.dry_run = true;
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
+
         println!("Temporary location : {}", temp_path);
 
         args.command = Commands::CopyDuplicates {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args, r);
+        let result = start_search(&file_ops, &args);
 
         assert!(result.is_ok());
     }
@@ -1666,9 +1850,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "data-badpath!!!".to_string();
         let file_ops = RealFileOperations;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let result = start_search(&file_ops, &args, r);
+
+        let result = start_search(&file_ops, &args);
         assert!(result.is_err());
     }
 
@@ -1680,16 +1863,18 @@ mod tests {
         args.shared.wildcard = "testnodupe.txt".to_owned();
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
+
         println!("Temporary location : {}", temp_path);
 
         args.command = Commands::CopyDuplicates {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let file_ops = RealFileOperations;
-        let result = start_search(&file_ops, &args, r);
+        let result = start_search(&file_ops, &args);
 
         assert!(result.is_ok());
     }
@@ -1697,12 +1882,9 @@ mod tests {
     #[test]
     fn test_identify_duplicates() {
         let args = create_default_command_line_arguments();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r1 = running.clone();
-        let r2 = running.clone();
 
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r1).unwrap();
-        let hash_map = identify_duplicates(&args, files, r2);
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1717,12 +1899,9 @@ mod tests {
     fn test_identify_duplicates_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r1 = running.clone();
-        let r2 = running.clone();
 
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None, r1).unwrap();
-        let hash_map = identify_duplicates(&args, files, r2);
+        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1736,11 +1915,9 @@ mod tests {
     #[test]
     fn test_identify_duplicates_no_files() {
         let args = create_default_command_line_arguments();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
 
         let files = Vec::new();
-        let hash_map = identify_duplicates(&args, files, r);
+        let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1754,8 +1931,7 @@ mod tests {
     #[test]
     fn test_identify_duplicates_badfiles() {
         let args = create_default_command_line_arguments();
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
+
         let mut files = Vec::new();
         let file = FileInfo {
             path: "todo!()".to_owned(),
@@ -1764,7 +1940,7 @@ mod tests {
             modified_at: Utc::now(),
         };
         files.push(file);
-        let hash_map = identify_duplicates(&args, files, r);
+        let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
         for (_hash, files) in hash_map.iter() {
@@ -1902,7 +2078,8 @@ mod tests {
         };
         // use our mock file operators - returns ok for file operations
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         // FindCommand does not operate on the file, so it always returns Ok
         assert!(result.is_ok());
     }
@@ -1921,7 +2098,8 @@ mod tests {
         };
         // use our mock file operators - returns ok for file operations
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         // FindCommand does not operate of the file, so it always returns Ok
         assert!(result.is_ok());
     }
@@ -1941,7 +2119,8 @@ mod tests {
         };
         // use our mock file operators - returns ok for file operations
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         // FindCommand does not operate of the file, so it always returns Ok
         assert!(result.is_ok());
     }
@@ -1963,7 +2142,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsError;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_err());
     }
 
@@ -1984,7 +2164,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_ok());
     }
 
@@ -1995,6 +2176,9 @@ mod tests {
         args.command = Commands::CopyDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -2006,7 +2190,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsError;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_err());
     }
 
@@ -2017,6 +2202,9 @@ mod tests {
         args.command = Commands::CopyDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -2028,7 +2216,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_ok());
     }
 
@@ -2039,6 +2228,9 @@ mod tests {
         args.command = Commands::MoveDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -2050,7 +2242,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsError;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_err());
     }
 
@@ -2061,6 +2254,9 @@ mod tests {
         args.command = Commands::MoveDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
         let mut multi = progressbar::MultiProgress::new();
         // fake file
@@ -2072,7 +2268,8 @@ mod tests {
         };
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_a_duplicate_file(&file_ops, &args, &file_info, &mut multi);
+        let result =
+            process_a_duplicate_file(&file_ops, &args, &file_info, "0000000000000000", &mut multi);
         assert!(result.is_ok());
     }
 
@@ -2083,9 +2280,10 @@ mod tests {
         args.command = Commands::MoveDuplicates {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
         };
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
 
         // create a fake hash map
         let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
@@ -2107,7 +2305,7 @@ mod tests {
 
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
-        let result = process_duplicates(&file_ops, &args, &hash_map, r);
+        let result = process_duplicates(&file_ops, &args, &hash_map);
         println!("{:?}", result);
         assert_eq!(result.contains_key("testhashkey"), true);
     }
