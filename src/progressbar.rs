@@ -27,7 +27,7 @@ const SPINNER_CHARS: &[char] = &[
 
 /// # ProgressBarStyle
 /// The `ProgressBarStyle` enum is used to specify the style of the progress bar.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ProgressBarStyle {
     /// A standard progress bar
     Bar,
@@ -160,6 +160,20 @@ impl ProgressBar {
         self
     }
 
+    /// # get_style
+    /// Gets the style of the progress bar.
+    /// ## Returns
+    /// The style of the progress bar
+    /// ## Example
+    /// ```rust
+    /// use progressbar::ProgressBar;
+    /// let progress_bar = ProgressBar::new(100);
+    /// let style = progress_bar.get_style();
+    /// ```
+    pub fn get_style(&self) -> ProgressBarStyle {
+        self.style
+    }
+
     /// # increment
     /// Increments the progress of the progress bar by the specified value.
     /// ## Parameters
@@ -192,6 +206,21 @@ impl ProgressBar {
     pub fn get_progress(&self) -> u32 {
         let progress = self.progress.lock().unwrap();
         *progress
+    }
+
+    /// # get_message
+    /// Gets the message to display with the progress bar.
+    /// ## Returns
+    /// The message to display
+    /// ## Example
+    /// ```rust
+    /// use progressbar::ProgressBar;
+    /// let progress_bar = ProgressBar::new(100);
+    /// let message = progress_bar.get_message();
+    /// ```
+    pub fn get_message(&self) -> String {
+        let message = self.message.lock().unwrap();
+        message.clone()
     }
 
     /// # set_message
@@ -580,10 +609,10 @@ impl MultiProgress {
     /// multi_progress.stop_all_spinners();
     /// ```
     fn stop_all_spinners(&self) {
-        // let progress_bars = self.progress_bars.lock().unwrap();
-        // for progress_bar in progress_bars.iter() {
-        //     progress_bar.stop_spinner();
-        // }
+        let progress_bars = self.progress_bars.lock().unwrap();
+        for progress_bar in progress_bars.iter() {
+            progress_bar.stop_spinner();
+        }
     }
 
     /// # start_all_spinners
@@ -595,10 +624,10 @@ impl MultiProgress {
     /// multi_progress.start_all_spinners();
     /// ```
     fn start_all_spinners(&self) {
-        // let progress_bars = self.progress_bars.lock().unwrap();
-        // for progress_bar in progress_bars.iter() {
-        //     progress_bar.start_spinner();
-        // }
+        let progress_bars = self.progress_bars.lock().unwrap();
+        for progress_bar in progress_bars.iter() {
+            progress_bar.start_spinner();
+        }
     }
 
     /// # draw_all
@@ -800,4 +829,217 @@ impl MultiProgress {
         drop(progress_bars);
         count
     }
+}
+
+/// # Tests
+///
+/// Unit tests for the various functions and features of the program.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_progress_bar_new() {
+        let progress_bar = ProgressBar::new(100);
+        assert_eq!(progress_bar.get_style(), ProgressBarStyle::Bar);
+        assert_eq!(progress_bar.get_progress(), 0);
+    }
+
+    #[test]
+    fn test_progress_bar_new_spinner() {
+        let progress_bar = ProgressBar::new_spinner();
+        assert_eq!(progress_bar.get_style(), ProgressBarStyle::Spinner);
+        assert_eq!(progress_bar.get_progress(), 0);
+        assert_eq!(*progress_bar.is_spinning.lock().unwrap(), false);
+    }
+
+    #[test]
+    fn test_progress_bar_hidden() {
+        let progress_bar = ProgressBar::hidden();
+        assert_eq!(progress_bar.get_style(), ProgressBarStyle::Hidden);
+        assert_eq!(progress_bar.get_progress(), 0);
+    }
+
+    #[test]
+    fn test_progress_bar_with_message_chain() {
+        let progress_bar = ProgressBar::new(100).with_message("Loading...");
+        assert_eq!(progress_bar.get_style(), ProgressBarStyle::Bar);
+        assert_eq!(progress_bar.get_progress(), 0);
+        assert_eq!(progress_bar.get_message(), "Loading...");
+    }
+
+    #[test]
+    fn test_progress_bar_increment() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.increment(10);
+        assert_eq!(progress_bar.get_progress(), 10);
+    }
+
+    #[test]
+    fn test_progress_bar_increment_more_than_total() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.increment(200);
+        assert_eq!(progress_bar.get_progress(), 100);
+    }
+
+    #[test]
+    fn test_progress_bar_set_message() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.set_message("Loading...");
+        assert_eq!(progress_bar.get_message(), "Loading...");
+    }
+
+    #[test]
+    fn test_progress_bar_set_row() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.set_row(5);
+        assert_eq!(*progress_bar.start_row.lock().unwrap(), 5);
+    }
+
+    #[test]
+    fn test_progress_bar_println() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.println("Loading...");
+    }
+
+    #[test]
+    fn test_progress_bar_with_start_spinner() {
+        let progress_bar = ProgressBar::new_spinner().with_start_spinner();
+        assert_eq!(progress_bar.get_style(), ProgressBarStyle::Spinner);
+        assert_eq!(*progress_bar.is_spinning.lock().unwrap(), true);
+    }
+
+    #[test]
+    fn test_progress_bar_start_spinner() {
+        let progress_bar = ProgressBar::new_spinner();
+        progress_bar.start_spinner();
+        assert_eq!(progress_bar.get_style(), ProgressBarStyle::Spinner);
+        assert_eq!(*progress_bar.is_spinning.lock().unwrap(), true);
+    }
+
+    #[test]
+    fn test_progress_bar_stop_spinner() {
+        let progress_bar = ProgressBar::new_spinner().with_start_spinner();
+        progress_bar.stop_spinner();
+        assert_eq!(*progress_bar.is_spinning.lock().unwrap(), false);
+    }
+
+    #[test]
+    fn test_progress_bar_draw_spinner() {
+        let progress_bar = ProgressBar::new_spinner();
+        progress_bar.draw_spinner(false);
+    }
+
+    #[test]
+    fn test_progress_bar_draw() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.draw();
+    }
+
+    #[test]
+    fn test_progress_bar_finish() {
+        let progress_bar = ProgressBar::new_spinner().with_start_spinner();
+        progress_bar.finish();
+        assert_eq!(*progress_bar.is_spinning.lock().unwrap(), false);
+    }
+
+    #[test]
+    fn test_multi_progress_new() {
+        let multi_progress = MultiProgress::new();
+        assert_eq!(multi_progress.get_progress_bars_count(), 0);
+    }
+
+    #[test]
+    fn test_multi_progress_add() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = ProgressBar::new(100);
+        multi_progress.add(progress_bar);
+        assert_eq!(multi_progress.get_progress_bars_count(), 1);
+    }
+
+    #[test]
+    fn test_multi_progress_add_with_location() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = ProgressBar::new(100);
+        multi_progress.add_with_location(progress_bar, AddLocation::Bottom);
+        assert_eq!(multi_progress.get_progress_bars_count(), 1);
+    }
+
+    #[test]
+    fn test_multi_progress_remove() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = ProgressBar::new(100);
+        multi_progress.add(progress_bar.clone());
+        multi_progress.remove(&progress_bar);
+        assert_eq!(multi_progress.get_progress_bars_count(), 0);
+    }
+
+    #[test]
+    fn test_multi_progress_stop_all_spinners() {
+        let multi_progress = MultiProgress::new();
+        let spinner = multi_progress.add(ProgressBar::new_spinner().with_start_spinner());
+        multi_progress.stop_all_spinners();
+        assert_eq!(*spinner.is_spinning.lock().unwrap(), false);
+    }
+
+    #[test]
+    fn test_multi_progress_start_all_spinners() {
+        let multi_progress = MultiProgress::new();
+        let spinner = multi_progress.add(ProgressBar::new_spinner());
+        multi_progress.start_all_spinners();
+        assert_eq!(*spinner.is_spinning.lock().unwrap(), true);
+    }
+
+    #[test]
+    fn test_multi_progress_draw_all() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = ProgressBar::new(100);
+        multi_progress.add(progress_bar);
+        multi_progress.draw_all();
+    }
+
+    #[test]
+    fn test_multi_progress_finish_all() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = multi_progress.add(ProgressBar::new_spinner().with_start_spinner());
+        multi_progress.finish_all();
+        assert_eq!(*progress_bar.is_spinning.lock().unwrap(), false);
+    }
+
+    #[test]
+    fn test_multi_progress_println() {
+        let multi_progress = MultiProgress::new();
+        multi_progress.println("Loading...");
+    }
+
+    #[test]
+    fn test_multi_progress_eprintln() {
+        let multi_progress = MultiProgress::new();
+        multi_progress.eprintln("Error: Something went wrong");
+    }
+
+    #[test]
+    fn test_multi_progress_set_message() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = multi_progress.add(ProgressBar::new(100));
+        multi_progress.set_message(&progress_bar, "Loading...");
+        assert_eq!(progress_bar.get_message(), "Loading...");
+    }
+
+    #[test]
+    fn test_multi_progress_increment() {
+        let multi_progress = MultiProgress::new();
+        let progress_bar = multi_progress.add(ProgressBar::new(100));
+        multi_progress.increment(&progress_bar, 10);
+        assert_eq!(progress_bar.get_progress(), 10);
+    }
+
+    #[test]
+    fn test_multi_progress_get_progress_bars_count() {
+        let multi_progress = MultiProgress::new();
+        let _progress_bar = multi_progress.add(ProgressBar::new(100));
+        assert_eq!(multi_progress.get_progress_bars_count(), 1);
+    }
+
+
 }
