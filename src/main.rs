@@ -804,6 +804,9 @@ fn get_files_in_directory(
                 if fa & 0x00000002 != 0 {
                     hidden = true;
                 }
+                else {
+                    hidden = false;
+                }
             }
 
             if hidden {
@@ -902,6 +905,9 @@ fn get_files_in_directory(
                 {
                     if std::fs::metadata(&path).unwrap().file_attributes() & 0x00000002 != 0 {
                         hidden = true;
+                    }
+                    else {
+                        hidden = false;
                     }
                 }
                 if args.shared.include_hidden_files == false && hidden {
