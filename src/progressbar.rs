@@ -10,7 +10,6 @@ use crossterm::cursor::{
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, ScrollUp};
-use crossterm::tty::IsTty;
 use crossterm::{
     cursor::MoveTo,
     execute,
@@ -43,7 +42,7 @@ pub enum ProgressBarStyle {
 /// The `SharedState` struct is used to hold shared state between `ProgressBar` and `MultiProgress`.
 #[derive(Clone)]
 struct SharedState {
-    //in_use: bool,
+    
 }
 
 impl SharedState {
@@ -51,14 +50,6 @@ impl SharedState {
         static INSTANCE: OnceLock<Mutex<SharedState>> = OnceLock::new();
         INSTANCE.get_or_init(|| Mutex::new(SharedState {  }))
     }
-
-    // pub fn set_in_use(&mut self, value: bool) {
-    //     self.in_use = value;
-    // }
-
-    // pub fn get_in_use(&mut self) -> bool {
-    //     self.in_use
-    // }
 }
 
 /// # ProgressBar
