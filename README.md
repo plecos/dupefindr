@@ -82,10 +82,13 @@ The executable will be located in \target\debug
 Run
 
 ```
-cargo test
+cargo test --test-threads=1
 ```
 
 to run all unit tests.
+
+### NOTE
+As of now, test must be run sequentially due to the use of shared instance.  If --test-threads is not used, then tests may fail.
 
 Run
 
