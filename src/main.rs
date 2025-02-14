@@ -66,6 +66,7 @@ use glob;
 use md5::{self, Digest};
 use progressbar::AddLocation;
 use std::collections::HashMap;
+use std::env::ArgsOs;
 use std::io::{self, stdout, Read, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::MetadataExt;
@@ -147,6 +148,15 @@ struct SharedOptions {
     /// If set to 0, then it will use the number of CPUs
     #[arg(short, long, default_value = "0")]
     max_threads: Option<usize>,
+
+    /// Create a report
+    #[arg(long, default_value = "false")]
+    create_report: bool,
+
+    /// Path of the report
+    /// Defaults to the folder where dupefindr was run
+    #[arg(long, default_value = "./dupefindr-report.csv")]
+    report_path: String,
 }
 
 /// # Duplicate Selection Method
@@ -366,6 +376,7 @@ impl FileOperations for RealFileOperations {
     }
 }
 
+
 /// # TerminalGuard
 /// Struct to guard the terminal and reset it when dropped.
 /// * `drop` - Reset the terminal.
@@ -462,7 +473,7 @@ fn main() {
 
     print_banner();
 
-    let args = get_command_line_arguments();
+    let args = get_command_line_arguments(args);
 
     setup_ctrlc_handler();
 
@@ -556,15 +567,16 @@ fn reset_terminal() {
 /// # get_command_line_arguments
 /// Gets the command line arguments object.  Not included in testing since there are no command lines passed in
 #[cfg(not(tarpaulin_include))]
-fn get_command_line_arguments() -> Args {
-    let args = match Args::try_parse() {
-        Ok(args) => args,
-        Err(e) => {
-            myprintln!("{}", e);
-            myprintln!();
-            std::process::exit(-2);
-        }
-    };
+fn get_command_line_arguments(args: Args) -> Args {
+
+    // let args = match Args::try_parse_from(std_env.get_args_os()) {
+    //     Ok(args) => args,
+    //     Err(e) => {
+    //         myprintln!("{}", e);
+    //         myprintln!();
+    //         std::process::exit(-2);
+    //     }
+    // };
     if args.shared.debug {
         let default_parallelism_approx = num_cpus::get();
         myprintln!("Command: {:?}", args.command);
@@ -581,9 +593,21 @@ fn get_command_line_arguments() -> Args {
         myprintln!("Wildcard: {}", args.shared.wildcard);
         myprintln!("Exclusion wildcard: {}", args.shared.exclusion_wildcard);
         myprintln!("Available cpus: {}", default_parallelism_approx);
+        myprintln!("Create Report: {}", args.shared.create_report);
+        myprintln!("Report Path: {}", args.shared.report_path);
         myprintln!();
     }
 
+    // validate 
+    // if create report is true, then validate the report_path
+    // rather do it now, that later 
+    if args.shared.create_report {
+        // attempt to create a file specified by report_path
+        if let Err(e) = std::fs::File::create(&args.shared.report_path) {
+            myeprintln!("Invalid report file path: {}", e);
+            std::process::exit(-2);
+        }
+    }
     args
 }
 
@@ -656,6 +680,11 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
         if args.shared.verbose {
             myprintln!();
         }
+    }
+
+    // create report if configured
+    if args.shared.create_report {
+
     }
 
     // return the search results
@@ -1545,6 +1574,8 @@ fn select_duplicate_files(
 /// Unit tests for the various functions and features of the program.
 #[cfg(test)]
 mod tests {
+    use std::env::args_os;
+
     use super::*;
     use tempfile::tempdir;
 
@@ -1608,6 +1639,70 @@ mod tests {
         }
     }
 
+    struct MockGoodStdEnv;
+    struct MockBadReportStdEnv;
+
+    impl StdEnv for MockGoodStdEnv {
+        fn get_args_os(&self) -> ArgsOs {
+            let args: Vec<std::ffi::OsString> = vec![
+            "dupefindr".into(),
+            "--path".into(),
+            "testdata".into(),
+            "--recursive".into(),
+            "--debug".into(),
+            "--include-empty-files".into(),
+            "--dry-run".into(),
+            "--include-hidden-files".into(),
+            "--verbose".into(),
+            "--quiet".into(),
+            "--wildcard".into(),
+            "*.txt".into(),
+            "--exclusion-wildcard".into(),
+            "*.log".into(),
+            "--max-threads".into(),
+            "4".into(),
+            "--create-report".into(),
+            "--report-path".into(),
+            "./dupefindr-report.csv".into(),
+            "find".into(),
+            "--method".into(),
+            "newest".into(),
+            ];
+            ArgsOs {   }
+           
+        }
+    }
+
+    impl StdEnv for MockBadReportStdEnv {
+        fn get_args_os(&self) -> ArgsOs {
+            let args: Vec<std::ffi::OsString> = vec![
+            "dupefindr".into(),
+            "--path".into(),
+            "testdata".into(),
+            "--recursive".into(),
+            "--debug".into(),
+            "--include-empty-files".into(),
+            "--dry-run".into(),
+            "--include-hidden-files".into(),
+            "--verbose".into(),
+            "--quiet".into(),
+            "--wildcard".into(),
+            "*.txt".into(),
+            "--exclusion-wildcard".into(),
+            "*.log".into(),
+            "--max-threads".into(),
+            "4".into(),
+            "--create-report".into(),
+            "--report-path /bad!()path/xxx".into(),
+            "./dupefindr-report.csv".into(),
+            "find".into(),
+            "--method".into(),
+            "newest".into(),
+            ];
+            ArgsOs::from(args)
+        }
+    }
+
     fn create_default_command_line_arguments() -> Args {
         let shared_options = SharedOptions {
             path: "testdata".to_string(),
@@ -1621,6 +1716,8 @@ mod tests {
             wildcard: "*".to_string(),
             exclusion_wildcard: "".to_string(),
             max_threads: Some(0),
+            create_report: false,
+            report_path: "./dupefinder-report.csv".to_string(),
         };
         let s1 = shared_options.clone();
         let args = Args {
