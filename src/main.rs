@@ -1146,46 +1146,17 @@ fn process_duplicates<T: FileOperations>(
     }
 
     // get list of files to process
-    for (hash, files) in hash_map.iter() {
+    for (index, (hash, files)) in hash_map.iter().enumerate() {
         // if there is only one file, then it isn't a duplicate
         if files.len() > 1 {
             new_hash_map.insert(hash.clone(), files.clone());
-
-            // if args.shared.debug {
-            //     match &args.command {
-            //         Commands::FindDuplicates { method: _ } => {
-            //             let _ = multi.println(&format!("FindDuplicates: {}", hash));
-            //         }
-            //         Commands::MoveDuplicates {
-            //             location,
-            //             method: _,
-            //             flatten: _,
-            //             no_hash_folder: _,
-            //             overwrite: _,
-            //         } => {
-            //             let _ = multi.println(&format!("MoveDuplicates: {} to {}", hash, location));
-            //         }
-            //         Commands::CopyDuplicates {
-            //             location,
-            //             method: _,
-            //             flatten: _,
-            //             no_hash_folder: _,
-            //             overwrite: _,
-            //         } => {
-            //             let _ = multi.println(&format!("CopyDuplicates: {} to {}", hash, location));
-            //         }
-            //         Commands::DeleteDuplicates { method: _ } => {
-            //             let _ = multi.println(&format!("DeleteDuplicates: {}", hash));
-            //         }
-            //     }
-            // }
 
             // if the command is FindDuplicates, then we don't need to process the duplicates
             if let Commands::FindDuplicates { .. } = args.command {
                 continue;
             }
 
-            let dup_fileset = select_duplicate_files(method.clone(), hash, files, &bar2);
+            let dup_fileset = select_duplicate_files(method.clone(), hash, files, index, hash_map.len() , &bar2);
             if dup_fileset.keeper.is_none() {
                 if args.shared.debug {
                     let _ = multi.eprintln("**************************************");
@@ -1423,30 +1394,22 @@ fn get_hash_of_file(
     }
 }
 
-/// # get_md5_hash
-/// Get the MD5 hash of a buffer
-/// * `buffer` - The buffer to hash.
-/// # Returns
-/// * `String` - The MD5 hash.
-// fn get_md5_hash(buffer: &Vec<u8>) -> String {
-//     let mut hasher = md5::Md5::new();
-//     hasher.update(&buffer);
-//     let hash = hasher.finalize();
-//     format!("{:x}", hash)
-// }
-
 /// # select_duplicate_files
 /// Select the duplicate files based on the method specified in the command line arguments
 /// * `method` - The method to use.
 /// * `hash` - The hash of the files.
 /// * `files` - The files to process.
-/// * `bar` - The progress bar.
+/// * `position_duplicates` - The index in the list of duplictes
+/// * `total_duplicates` - The total number of duplicates
+/// * `bar` - The progress bar. 
 /// # Returns
 /// * `DuplicateFileSet` - The set of duplicate files.
 fn select_duplicate_files(
     method: DuplicateSelectionMethod,
     hash: &String,
     files: &Vec<FileInfo>,
+    position_duplicates: usize,
+    total_duplicates: usize,
     _bar: &progressbar::ProgressBar,
 ) -> DuplicateFileSet {
     let mut dup_fileset = DuplicateFileSet {
@@ -1480,7 +1443,7 @@ fn select_duplicate_files(
             let _ = queue!(
                 stdout(),
                 SetAttribute(style::Attribute::Bold),
-                style::Print("Duplicate File Interactive Selector"),
+                style::Print(format!("Duplicate File Interactive Selector [{}/{}]", position_duplicates, total_duplicates)),
                 cursor::MoveToNextLine(1),
                 SetAttribute(style::Attribute::Reset),
                 style::Print(""),
@@ -2087,6 +2050,7 @@ mod tests {
             DuplicateSelectionMethod::Newest,
             &"testhash".to_owned(),
             &files,
+            1,1,
             &bar,
         );
         assert_eq!(dup_fileset.keeper.is_some(), true);
@@ -2136,6 +2100,7 @@ mod tests {
             DuplicateSelectionMethod::Oldest,
             &"testhash".to_owned(),
             &files,
+            1,1,
             &bar,
         );
         assert_eq!(dup_fileset.keeper.is_some(), true);
@@ -2167,6 +2132,7 @@ mod tests {
             DuplicateSelectionMethod::Oldest,
             &"testhash".to_owned(),
             &files,
+            1,1,
             &bar,
         );
         assert_eq!(dup_fileset.keeper.is_none(), true);
