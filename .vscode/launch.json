@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["-p","./testdata","-r","--dry-run","copy","-l","/tmp","--method","interactive"],
             "cwd": "${workspaceFolder}"
         },
         {
