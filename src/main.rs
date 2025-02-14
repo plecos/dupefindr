@@ -58,9 +58,10 @@
 ///
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
+use crossterm::cursor::MoveToRow;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
-use crossterm::style::{Color, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{self, ClearType};
+use crossterm::style::{Color, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{cursor, execute, queue, style};
 use glob;
 use md5::{self, Digest};
@@ -1486,9 +1487,7 @@ fn select_duplicate_files(
                 cursor::MoveToNextLine(1),
                 style::Print("Move the selector up and down using the ARROW keys"),
                 cursor::MoveToNextLine(1),
-                style::Print("Press SPACE to select one or more files to keep"),
-                cursor::MoveToNextLine(1),
-                style::Print("Press ENTER to process the unselected duplicate files and continue"),
+                style::Print("Press ENTER to keep the selected file and process the other files"),
                 cursor::MoveToNextLine(1),
                 style::Print("Press ESC to exit"),
                 cursor::MoveToNextLine(1),
@@ -1498,22 +1497,28 @@ fn select_duplicate_files(
                 cursor::MoveToNextLine(1),
             );
 
+            let start_row = crossterm::cursor::position().unwrap().1;
+
             loop {
-                let _ = queue!(stdout(), style::Print(""), cursor::MoveToNextLine(1));
+                let _ = queue!(stdout(), MoveToRow(start_row), style::Print(""), cursor::MoveToNextLine(1));
                 // print out list of files to the user
                 for (i, item) in files.iter().enumerate() {
                     if i == selected_index {
                         let _ = queue!(
                             stdout(),
-                            SetForegroundColor(Color::Red),
-                            style::Print(format!("> {}", item.path)),
+                            Clear(ClearType::CurrentLine),
+                            SetForegroundColor(Color::Yellow),
+                            style::Print(format!("> {} [c:{}] [m:{}]", item.path, item.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"), item.modified_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"))),
+                            ResetColor,
                             cursor::MoveToNextLine(1)
                         );
                     } else {
                         let _ = queue!(
                             stdout(),
+                            Clear(ClearType::CurrentLine),
                             SetForegroundColor(Color::Red),
-                            style::Print(format!("  {}", item.path)),
+                            style::Print(format!("  {} [c:{}] [m:{}]", item.path, item.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"), item.modified_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"))),
+                            ResetColor,
                             cursor::MoveToNextLine(1)
                         );
                     }
