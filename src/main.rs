@@ -375,7 +375,6 @@ impl FileOperations for RealFileOperations {
     }
 }
 
-
 /// # TerminalGuard
 /// Struct to guard the terminal and reset it when dropped.
 /// * `drop` - Reset the terminal.
@@ -460,7 +459,7 @@ fn main() {
     // before enabling raw mode, we need to test if the command line args passed in were valid
     // if they aren't then have print the error and exit
     let args = match Args::try_parse() {
-        Ok(args) => {args}
+        Ok(args) => args,
         Err(e) => {
             myprintln!("{}", e);
             myprintln!();
@@ -591,9 +590,9 @@ fn get_command_line_arguments(args: &Args) -> Result<(), std::io::Error> {
         myprintln!();
     }
 
-    // validate 
+    // validate
     // if create report is true, then validate the report_path
-    // rather do it now, that later 
+    // rather do it now, that later
     if args.shared.create_report {
         // attempt to create a file specified by report_path
         if let Err(e) = std::fs::File::create(&args.shared.report_path) {
@@ -678,7 +677,7 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
 
     // create report if configured
     if args.shared.create_report {
-
+        let _ = create_duplicate_report(&args, hash_map);
     }
 
     // return the search results
@@ -826,8 +825,7 @@ fn get_files_in_directory(
                 let fa = md.unwrap().file_attributes();
                 if fa & 0x00000002 != 0 {
                     hidden = true;
-                }
-                else {
+                } else {
                     hidden = false;
                 }
             }
@@ -928,8 +926,7 @@ fn get_files_in_directory(
                 {
                     if std::fs::metadata(&path).unwrap().file_attributes() & 0x00000002 != 0 {
                         hidden = true;
-                    }
-                    else {
+                    } else {
                         hidden = false;
                     }
                 }
@@ -1563,6 +1560,39 @@ fn select_duplicate_files(
     dup_fileset
 }
 
+fn create_duplicate_report(
+    args: &Args,
+    hash_map: HashMap<String, Vec<FileInfo>>,
+) -> Result<(), std::io::Error> {
+    if !args.shared.create_report {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Report creation is disabled",
+        ));
+    }
+
+    let mut wtr = csv::Writer::from_path(&args.shared.report_path)?;
+
+    wtr.write_record(&["Hash", "File Path", "Size", "Created At", "Modified At"])?;
+
+    for (hash, files) in hash_map {
+        if files.len() > 1 {
+            for file in files {
+                wtr.write_record(&[
+                    hash.clone(),
+                    file.path,
+                    file.size.to_string(),
+                    file.created_at.to_rfc3339(),
+                    file.modified_at.to_rfc3339(),
+                ])?;
+            }
+        }
+    }
+
+    wtr.flush()?;
+    Ok(())
+}
+
 /// # Tests
 ///
 /// Unit tests for the various functions and features of the program.
@@ -1636,7 +1666,7 @@ mod tests {
         let shared_options = SharedOptions {
             path: "testdata".to_string(),
             recursive: false,
-            debug: true,
+            debug: false,
             include_empty_files: false,
             dry_run: true,
             include_hidden_files: false,
@@ -1798,7 +1828,7 @@ mod tests {
             &progressbar::ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_ok());
-        assert_eq!(hash.unwrap(),"8c91214730e59f67bd46d1855156e762");
+        assert_eq!(hash.unwrap(), "8c91214730e59f67bd46d1855156e762");
         //assert_eq!(hash.unwrap(), "710c2d261165da2eac0e2321ea9ddbed");
     }
 
