@@ -1600,6 +1600,7 @@ fn create_duplicate_report(
 mod tests {
 
     use super::*;
+    use csv::ReaderBuilder;
     use tempfile::tempdir;
 
     // setup mock file operations
@@ -1934,8 +1935,6 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
 
-        println!("Temporary location : {}", temp_path);
-
         args.command = Commands::CopyDuplicates {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
@@ -1947,6 +1946,41 @@ mod tests {
         let result = start_search(&file_ops, &args);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_report() {
+        let mut args = create_default_command_line_arguments();
+        args.shared.recursive = true;
+        args.shared.dry_run = true;
+        args.shared.wildcard = "testnodupe.txt".to_owned();
+        let temp_dir = tempdir().unwrap();
+        let temp_path = temp_dir.path().to_str().unwrap().to_string();
+        args.shared.create_report = true;
+        args.shared.report_path = "./testreport.csv".to_string();
+
+        args.command = Commands::CopyDuplicates {
+            location: temp_path,
+            method: DuplicateSelectionMethod::Newest,
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: false,
+        };
+
+        let file_ops = RealFileOperations;
+        let result = start_search(&file_ops, &args);
+
+        assert!(result.is_ok());
+        // test to see if report file was created
+        assert!(std::path::Path::new("./testreport.csv").exists());
+        // test to see if report file is valid csv
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(true)
+            .from_path("./testreport.csv")
+            .unwrap();
+        assert!(rdr.headers().is_ok());
+        // cleanup
+        std::fs::remove_file("./testreport.csv").unwrap();
     }
 
     #[test]
