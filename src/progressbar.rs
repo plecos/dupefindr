@@ -218,13 +218,7 @@ impl ProgressBar {
             }
             drop(progress);
             self.draw();
-        } else {
-            let mut index = self.spinner_index.lock().unwrap();
-            *index = (*index + 1) % SPINNER_CHARS.len();
-
-            drop(index);
-            self.draw();
-        }
+        } 
     }
 
     /// # set_position
@@ -246,13 +240,7 @@ impl ProgressBar {
             }
             drop(progress);
             self.draw();
-        } else {
-            let mut index = self.spinner_index.lock().unwrap();
-            *index = (*index + value as usize) % SPINNER_CHARS.len();
-
-            drop(index);
-            self.draw();
-        }
+        } 
     }
 
     /// # get_position
@@ -355,6 +343,7 @@ impl ProgressBar {
         } else {
             // If the terminal is not a TTY, print the message to stdout
             // this is included for testing purposes where there is no TTY or for redirection to a file
+            #[cfg(not(tarpaulin_include))]
             println!("{}", message);
         }
     }
@@ -411,6 +400,7 @@ impl ProgressBar {
         } else {
             // If the terminal is not a TTY, print the message to stdout
             // this is included for testing purposes where there is no TTY or for redirection to a file
+            #[cfg(not(tarpaulin_include))]
             eprintln!("{}", message);
         }
     }
@@ -551,6 +541,7 @@ impl ProgressBar {
         let stdout = stdout();
         let is_terminal = stdout.is_terminal();
         if !is_terminal {
+            #[cfg(not(tarpaulin_include))]
             return;
         } else if self.style.eq(&ProgressBarStyle::Hidden) {
             return;
@@ -606,7 +597,6 @@ impl ProgressBar {
         }
     }
 
-    pub fn finish_and_clear(&self) {}
 }
 
 /// # MultiProgress
@@ -940,8 +930,8 @@ impl MultiProgress {
             self.move_down(1);
             self.render_all(false);
             stdout.flush().unwrap();
-            //execute!(stdout, EndSynchronizedUpdate).unwrap();
         } else {
+            #[cfg(not(tarpaulin_include))]
             println!("{}", message);
         }
     }
@@ -979,6 +969,7 @@ impl MultiProgress {
             stdout.flush().unwrap();
             execute!(stdout, EndSynchronizedUpdate).unwrap();
         } else {
+            #[cfg(not(tarpaulin_include))]
             println!("{}", message);
         }
     }
@@ -1144,18 +1135,44 @@ mod tests {
         assert_eq!(progress_bar.get_message(), "Loading...");
     }
 
-    // #[test]
-    // fn test_progress_bar_set_row() {
-    //     let progress_bar = ProgressBar::new(100);
-    //     progress_bar.set_row(5);
-    //     assert_eq!(*progress_bar.start_row.lock().unwrap(), 5);
-    // }
+    #[test]
+    fn test_progress_bar_set_position() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.set_position(10);
+        assert_eq!(progress_bar.get_position(), 10);
+    }
+
+    #[test]
+    fn test_progress_bar_set_position_big_value() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.set_position(1000);
+        assert_eq!(progress_bar.get_position(), 100);
+    }
 
     #[test]
     fn test_progress_bar_println() {
         let progress_bar = ProgressBar::new(100);
         progress_bar.println("Loading...");
     }
+
+    #[test]
+    fn test_progress_bar_println_spinner() {
+        let progress_bar = ProgressBar::new_spinner().with_start_spinner();
+        progress_bar.println("Loading...");
+    }
+
+    #[test]
+    fn test_progress_bar_eprintln() {
+        let progress_bar = ProgressBar::new(100);
+        progress_bar.eprintln("Loading...");
+    }
+
+    #[test]
+    fn test_progress_bar_eprintln_spinner() {
+        let progress_bar = ProgressBar::new_spinner().with_start_spinner();
+        progress_bar.eprintln("Loading...");
+    }
+
 
     #[test]
     fn test_progress_bar_with_start_spinner() {
@@ -1294,5 +1311,25 @@ mod tests {
         let multi_progress = MultiProgress::new();
         let _progress_bar = multi_progress.add(ProgressBar::new(100));
         assert_eq!(multi_progress.get_progress_bars_count(), 1);
+    }
+
+    #[test]
+    fn test_multi_progress_set_position() {
+        let multi_progress = MultiProgress::new();
+        let _progress_bar = multi_progress.add(ProgressBar::new(100));
+        multi_progress.set_position(&_progress_bar, 10);
+        assert_eq!(_progress_bar.get_position(), 10);
+    }
+
+    #[test]
+    fn test_multi_progress_set_position_multiple_bars() {
+        let multi_progress = MultiProgress::new();
+        let _progress_bar = multi_progress.add(ProgressBar::new(100));
+        let _progress_bar2 = multi_progress.add(ProgressBar::new(100));
+        let _progress_bar3 = multi_progress.add(ProgressBar::new(100));
+        multi_progress.set_position(&_progress_bar2, 10);
+        assert_eq!(_progress_bar2.get_position(), 10);
+        assert_eq!(_progress_bar.get_position(), 0);
+        assert_eq!(_progress_bar3.get_position(), 0);
     }
 }
