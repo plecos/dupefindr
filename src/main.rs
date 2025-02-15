@@ -404,7 +404,6 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        println!("TerminalGuard::drop called");
         reset_terminal();
     }
 }
@@ -2539,5 +2538,12 @@ mod tests {
         assert!(result[0].keeper.is_some());
         assert_eq!(result[0].extras.len(), 1);
         assert_eq!(result[0].result, DuplicateResult::Moved);
+    }
+
+    #[test]
+    fn test_terminal_guard() {
+        // Create an instance of TerminalGuard that will be dropped when main exits
+        let _guard = TerminalGuard;
+        drop(_guard);
     }
 }

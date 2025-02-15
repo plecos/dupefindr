@@ -38,7 +38,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["-p","/Volumes/Photos","--dry-run","copy","-l","/tmp","--method","interactive"],
+            "args": ["-p","./testdata","--dry-run","copy","-l","/tmp","--method","interactive"],
             "cwd": "${workspaceFolder}",
             "stopOnEntry": false,
             "preLaunchTask": "cargo build",
