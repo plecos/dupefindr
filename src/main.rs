@@ -540,6 +540,7 @@ fn print_banner() {
 
 /// # setup_ctrlc_handler
 /// Function to setup the ctrl-c handler.
+#[cfg(not(tarpaulin_include))]
 fn setup_ctrlc_handler() {
     // spawn a thread that will get key events and check for ctrl-c
     std::thread::spawn(move || -> Result<(), anyhow::Error> {
