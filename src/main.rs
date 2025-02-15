@@ -171,7 +171,7 @@ enum DuplicateSelectionMethod {
     Interactive,
 }
 
-#[derive(Subcommand, Debug, PartialEq)]
+#[derive(Subcommand, Debug, PartialEq, Clone)]
 enum Commands {
     #[command(name = "find", about = "Find duplicate files")]
     FindDuplicates {
@@ -251,16 +251,37 @@ struct FileInfo {
     modified_at: DateTime<Utc>,
 }
 
+/// # DuplicateResult
+/// Specifies the result of the duplication action
+/// * `Skipped` - the duplicates were left as is
+/// * `Deleted` - the duplicates were deleted
+/// * `Copied` - the duplicates were copied
+/// * `Moved` - the duplicates were moved
+/// * `Found` - the duplicates were found, and left as is
+/// * `Aborted` - user aborted the duplication processing
+#[derive(Debug, Clone, PartialEq)]
+enum DuplicateResult {
+    Skipped,
+    Deleted,
+    Copied,
+    Moved,
+    Found,
+    Aborted,
+}
+
 /// # DuplicateFileSet
 ///
 /// Struct representing a set of duplicate files.
 ///
 /// * `keeper` - The file to keep.
 /// * `extras` - The duplicate files.
+/// * `result` - What happened to the duplicate files
 #[derive(Debug, Clone)]
 struct DuplicateFileSet {
+    hash: String,
     keeper: Option<FileInfo>,
     extras: Vec<FileInfo>,
+    result: DuplicateResult,
 }
 
 /// # SearchResults
@@ -648,16 +669,20 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
     // identify the duplicates
     let full_hash_map = identify_duplicates(args, files);
     // process the duplicates
-    let hash_map = process_duplicates(file_ops, args, &full_hash_map);
+    let dup_fileset_vec = process_duplicates(file_ops, args, &full_hash_map);
 
     // print the duplicate results
-    let duplicates_found = hash_map.len();
+    let duplicates_found = dup_fileset_vec.len();
     let mut duplicates_total_size: i64 = 0;
-    for (hash, files) in hash_map.iter() {
+    for dup_fileset in dup_fileset_vec.iter() {
         if args.shared.verbose {
-            myprintln!("Found {} duplicates for hash: {}", files.len(), hash);
+            myprintln!(
+                "Found {} duplicates for hash: {}",
+                dup_fileset.extras.len(),
+                dup_fileset.hash
+            );
         }
-        for file in files {
+        for file in &dup_fileset.extras {
             if args.shared.verbose {
                 myprintln!(
                     "File: {} [created: {}] [modified: {}] [{} bytes]",
@@ -667,18 +692,16 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
                     bytesize::ByteSize(file.size)
                 );
             }
-            if files.iter().position(|f| f.path == file.path).unwrap() != 0 {
-                duplicates_total_size += file.size as i64;
+            duplicates_total_size += file.size as i64;
+            if args.shared.verbose {
+                myprintln!();
             }
-        }
-        if args.shared.verbose {
-            myprintln!();
         }
     }
 
     // create report if configured
     if args.shared.create_report {
-        let _ = create_duplicate_report(&args, hash_map);
+        let _ = create_duplicate_report(&args, dup_fileset_vec);
     }
 
     // return the search results
@@ -1099,11 +1122,13 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
 /// * `args` - The command line arguments.
 /// * `hash_map` - The hash map of files.
 /// * `running` - The running flag.
+/// # Returns
+/// An Array of DuplicateFileSet
 fn process_duplicates<T: FileOperations>(
     file_ops: &T,
     args: &Args,
     hash_map: &HashMap<String, Vec<FileInfo>>,
-) -> HashMap<String, Vec<FileInfo>> {
+) -> Vec<DuplicateFileSet> {
     let mut new_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
     let mut multi = progressbar::MultiProgress::new();
@@ -1145,39 +1170,57 @@ fn process_duplicates<T: FileOperations>(
         multi.finish_all();
     }
 
+    // remove all entries from hash_map where the files.len() <= 1
+    let mut hash_map = hash_map.clone();
+    hash_map.retain(|_, files| files.len() > 1);
+
+    // store the results
+    let mut dup_results: Vec<DuplicateFileSet> = Vec::new();
+
     // get list of files to process
     for (index, (hash, files)) in hash_map.iter().enumerate() {
-        // if there is only one file, then it isn't a duplicate
-        if files.len() > 1 {
-            new_hash_map.insert(hash.clone(), files.clone());
+        new_hash_map.insert(hash.clone(), files.clone());
 
-            // if the command is FindDuplicates, then we don't need to process the duplicates
-            if let Commands::FindDuplicates { .. } = args.command {
-                continue;
-            }
+        // if the command is FindDuplicates, then we don't need to process the duplicates
+        if let Commands::FindDuplicates { .. } = args.command {
+            continue;
+        }
 
-            let dup_fileset = select_duplicate_files(method.clone(), hash, files, index, hash_map.len() , &bar2);
-            if dup_fileset.keeper.is_none() {
-                if args.shared.debug {
-                    let _ = multi.eprintln("**************************************");
-                    let _ = multi.eprintln("keeper is none, this shouldn't happen!");
-                    let _ = multi.eprintln(&format!("Method: {:?}", method));
-                    let _ = multi.eprintln(&format!("Files: {:?}", files));
-                    let _ = multi.eprintln("**************************************");
+        let dup_fileset = match select_duplicate_files(
+            args.command.clone(),
+            method.clone(),
+            hash,
+            files,
+            index + 1,
+            hash_map.len(),
+            &bar2,
+        ) {
+            Ok(dup_fileset) => dup_fileset,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    break;
+                } else {
+                    myeprintln!("Error selecting duplicate files: {}", e);
+                    continue;
                 }
-                continue;
             }
-            if args.shared.debug {
-                let _ = multi.println(&format!(
-                    "Selected File: {}",
-                    dup_fileset.keeper.unwrap().path
-                ));
-            }
-
-            for file in dup_fileset.extras {
-                let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
+        };
+        if dup_fileset.keeper.is_none() {
+            panic!("keeper is none, this shouldn't happen!");
+        }
+        if args.shared.debug {
+            if let Some(ref keeper) = dup_fileset.keeper {
+                let _ = multi.println(&format!("Selected File: {}", keeper.path));
             }
         }
+
+        for file in &dup_fileset.extras {
+            let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
+            yield_now();
+        }
+
+        dup_results.push(dup_fileset);
+
         multi.increment(&bar, 1);
     }
 
@@ -1186,7 +1229,7 @@ fn process_duplicates<T: FileOperations>(
     multi.remove(&bar2);
     multi.remove(&bar);
     multi.finish_all();
-    new_hash_map
+    dup_results
 }
 
 /// # process_a_duplicate_file
@@ -1396,28 +1439,39 @@ fn get_hash_of_file(
 
 /// # select_duplicate_files
 /// Select the duplicate files based on the method specified in the command line arguments
+/// * `command` - the command used (Find,Copy,Move,Delete)
 /// * `method` - The method to use.
 /// * `hash` - The hash of the files.
 /// * `files` - The files to process.
 /// * `position_duplicates` - The index in the list of duplictes
 /// * `total_duplicates` - The total number of duplicates
-/// * `bar` - The progress bar. 
+/// * `bar` - The progress bar.
 /// # Returns
 /// * `DuplicateFileSet` - The set of duplicate files.
+/// # `Error` - An Error or the user pressed ESC
 fn select_duplicate_files(
+    command: Commands,
     method: DuplicateSelectionMethod,
     hash: &String,
     files: &Vec<FileInfo>,
     position_duplicates: usize,
     total_duplicates: usize,
     _bar: &progressbar::ProgressBar,
-) -> DuplicateFileSet {
+) -> Result<DuplicateFileSet, std::io::Error> {
     let mut dup_fileset = DuplicateFileSet {
+        hash: hash.to_string(),
         keeper: None,
         extras: vec![],
+        result: DuplicateResult::Aborted,
     };
     if files.is_empty() {
-        return dup_fileset;
+        return Ok(dup_fileset);
+    }
+    match command {
+        Commands::FindDuplicates { .. } => dup_fileset.result = DuplicateResult::Found,
+        Commands::MoveDuplicates { .. } => dup_fileset.result = DuplicateResult::Moved,
+        Commands::CopyDuplicates { .. } => dup_fileset.result = DuplicateResult::Copied,
+        Commands::DeleteDuplicates { .. } => dup_fileset.result = DuplicateResult::Deleted,
     }
     match method {
         DuplicateSelectionMethod::Newest => {
@@ -1440,19 +1494,41 @@ fn select_duplicate_files(
             use crossterm::execute;
             let mut selected_index = 0;
 
+            let _ = execute!(
+                stdout(),
+                style::ResetColor,
+                cursor::Hide,
+                terminal::EnterAlternateScreen
+            );
+
             let _ = queue!(
                 stdout(),
                 SetAttribute(style::Attribute::Bold),
-                style::Print(format!("Duplicate File Interactive Selector [{}/{}]", position_duplicates, total_duplicates)),
+                style::Print(format!(
+                    "Duplicate File Interactive Selector [{}/{}]",
+                    position_duplicates, total_duplicates
+                )),
                 cursor::MoveToNextLine(1),
                 SetAttribute(style::Attribute::Reset),
                 style::Print(""),
                 cursor::MoveToNextLine(1),
-                style::Print("Move the selector up and down using the ARROW keys"),
+                style::Print("Press UP/DOWN ARROW keys to move the selector"),
                 cursor::MoveToNextLine(1),
+            );
+            if files.len() > 5 {
+                let _ = queue!(
+                    stdout(),
+                    style::Print("Press LEFT/RIGHT ARROW keys to switch pages of file "),
+                    cursor::MoveToNextLine(1),
+                );
+            }
+            let _ = queue!(
+                stdout(),
                 style::Print("Press ENTER to keep the selected file and process the other files"),
                 cursor::MoveToNextLine(1),
-                style::Print("Press ESC to exit"),
+                style::Print("Press S to skip this duplicate and move to the next"),
+                cursor::MoveToNextLine(1),
+                style::Print("Press ESC to stop processing duplicates"),
                 cursor::MoveToNextLine(1),
                 style::Print(""),
                 cursor::MoveToNextLine(1),
@@ -1461,17 +1537,45 @@ fn select_duplicate_files(
             );
 
             let start_row = crossterm::cursor::position().unwrap().1;
+            let mut current_page = 1;
+            let total_pages = files.len() / 5;
 
             loop {
-                let _ = queue!(stdout(), MoveToRow(start_row), style::Print(""), cursor::MoveToNextLine(1));
+                let _ = queue!(
+                    stdout(),
+                    MoveToRow(start_row),
+                    style::Print(""),
+                    cursor::MoveToNextLine(1)
+                );
+                let _ = queue!(
+                    stdout(),
+                    SetAttribute(style::Attribute::Underlined),
+                    style::Print(format!(
+                        "  {:<50} {:<20} {:<20} {}/{}",
+                        "File", "Created", "Modified", current_page, total_pages
+                    )),
+                    SetAttribute(style::Attribute::Reset),
+                    cursor::MoveToNextLine(1)
+                );
                 // print out list of files to the user
-                for (i, item) in files.iter().enumerate() {
+                let start_index = (current_page - 1) * 5;
+                let end_index = std::cmp::min(start_index + 5, files.len());
+                for (i, item) in files[start_index..end_index].iter().enumerate() {
                     if i == selected_index {
                         let _ = queue!(
                             stdout(),
                             Clear(ClearType::CurrentLine),
                             SetForegroundColor(Color::Yellow),
-                            style::Print(format!("> {} [c:{}] [m:{}]", item.path, item.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"), item.modified_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"))),
+                            style::Print(format!(
+                                "> {:<50} {:<20} {:<20}",
+                                item.path,
+                                item.created_at
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M:%S"),
+                                item.modified_at
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M:%S")
+                            )),
                             ResetColor,
                             cursor::MoveToNextLine(1)
                         );
@@ -1480,7 +1584,16 @@ fn select_duplicate_files(
                             stdout(),
                             Clear(ClearType::CurrentLine),
                             SetForegroundColor(Color::Red),
-                            style::Print(format!("  {} [c:{}] [m:{}]", item.path, item.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"), item.modified_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"))),
+                            style::Print(format!(
+                                "  {:<50} {:<20} {:<20}",
+                                item.path,
+                                item.created_at
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M:%S"),
+                                item.modified_at
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M:%S")
+                            )),
                             ResetColor,
                             cursor::MoveToNextLine(1)
                         );
@@ -1506,18 +1619,36 @@ fn select_duplicate_files(
                                 selected_index += 1;
                             }
                         }
+                        KeyCode::Left => {
+                            current_page -= 1;
+                            if current_page == 0 {
+                                current_page = 1;
+                            }
+                        }
+                        KeyCode::Right => {
+                            current_page += 1;
+                            if current_page > total_pages {
+                                current_page = total_pages;
+                            }
+                        }
                         KeyCode::Enter => {
+                            break;
+                        }
+                        KeyCode::Char('s') => {
+                            dup_fileset.result = DuplicateResult::Skipped;
                             break;
                         }
                         KeyCode::Esc => {
                             let _ = execute!(
                                 stdout(),
                                 style::ResetColor,
-                                cursor::Show,
+                                cursor::Hide,
                                 terminal::LeaveAlternateScreen
                             );
-                            let _ = terminal::disable_raw_mode();
-                            return dup_fileset;
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "User pressed ESC",
+                            ));
                         }
                         _ => {}
                     }
@@ -1525,12 +1656,18 @@ fn select_duplicate_files(
             }
         }
     }
-    dup_fileset
+    let _ = execute!(
+        stdout(),
+        style::ResetColor,
+        cursor::Hide,
+        terminal::LeaveAlternateScreen
+    );
+    Ok(dup_fileset)
 }
 
 fn create_duplicate_report(
     args: &Args,
-    hash_map: HashMap<String, Vec<FileInfo>>,
+    dup_fileset_vec: Vec<DuplicateFileSet>,
 ) -> Result<(), std::io::Error> {
     if !args.shared.create_report {
         return Err(io::Error::new(
@@ -1541,19 +1678,25 @@ fn create_duplicate_report(
 
     let mut wtr = csv::Writer::from_path(&args.shared.report_path)?;
 
-    wtr.write_record(&["Hash", "File Path", "Size", "Created At", "Modified At"])?;
+    wtr.write_record(&[
+        "Hash",
+        "File Path",
+        "Size",
+        "Created At",
+        "Modified At",
+        "Result",
+    ])?;
 
-    for (hash, files) in hash_map {
-        if files.len() > 1 {
-            for file in files {
-                wtr.write_record(&[
-                    hash.clone(),
-                    file.path,
-                    file.size.to_string(),
-                    file.created_at.to_rfc3339(),
-                    file.modified_at.to_rfc3339(),
-                ])?;
-            }
+    for dup_fileset in dup_fileset_vec.iter() {
+        for file in &dup_fileset.extras {
+            wtr.write_record(&[
+                dup_fileset.hash.clone(),
+                file.path.clone(),
+                file.size.to_string(),
+                file.created_at.to_rfc3339(),
+                file.modified_at.to_rfc3339(),
+                format!("{:?}", dup_fileset.result),
+            ])?;
         }
     }
 
@@ -2047,12 +2190,15 @@ mod tests {
         });
         let bar = progressbar::ProgressBar::new_spinner().with_message("none");
         let dup_fileset = select_duplicate_files(
+            args.command.clone(),
             DuplicateSelectionMethod::Newest,
             &"testhash".to_owned(),
             &files,
-            1,1,
+            1,
+            1,
             &bar,
-        );
+        )
+        .unwrap();
         assert_eq!(dup_fileset.keeper.is_some(), true);
         assert_eq!(
             dup_fileset.keeper.unwrap().path,
@@ -2097,12 +2243,15 @@ mod tests {
         });
         let bar = progressbar::ProgressBar::new_spinner().with_message("none");
         let dup_fileset = select_duplicate_files(
+            args.command.clone(),
             DuplicateSelectionMethod::Oldest,
             &"testhash".to_owned(),
             &files,
-            1,1,
+            1,
+            1,
             &bar,
-        );
+        )
+        .unwrap();
         assert_eq!(dup_fileset.keeper.is_some(), true);
         assert_eq!(
             dup_fileset.keeper.unwrap().path,
@@ -2126,15 +2275,19 @@ mod tests {
 
     #[test]
     fn test_select_duplicate_files_empty_files() {
+        let args = create_default_command_line_arguments();
         let files = Vec::new();
         let bar = progressbar::ProgressBar::new_spinner().with_message("none");
         let dup_fileset = select_duplicate_files(
+            args.command.clone(),
             DuplicateSelectionMethod::Oldest,
             &"testhash".to_owned(),
             &files,
-            1,1,
+            1,
+            1,
             &bar,
-        );
+        )
+        .unwrap();
         assert_eq!(dup_fileset.keeper.is_none(), true);
         assert_eq!(dup_fileset.extras.len(), 0);
     }
@@ -2381,7 +2534,10 @@ mod tests {
         // use our mock file operators
         let file_ops = MockFileOperationsOk;
         let result = process_duplicates(&file_ops, &args, &hash_map);
-        println!("{:?}", result);
-        assert_eq!(result.contains_key("testhashkey"), true);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].hash, "testhashkey");
+        assert!(result[0].keeper.is_some());
+        assert_eq!(result[0].extras.len(), 1);
+        assert_eq!(result[0].result, DuplicateResult::Moved);
     }
 }
