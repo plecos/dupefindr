@@ -23,26 +23,24 @@ Options:
 
 | Option | Description |
 |--------|-------------|
-| `-p, --path <PATH>` | The directory to search for duplicates in [default: .] |
-| `-w, --wildcard <WILDCARD>` | Wildcard pattern to search for. Example: *.txt [default: *] |
-| `--exclusion-wildcard <EXCLUSION_WILDCARD>` | Wildcard pattern to exclude. Example: *.txt [default: ] |
-| `-r, --recursive` | Recursively search for duplicates |
-| `--debug` | Display debug information |
 | `-0, --include-empty-files` | Include empty files |
-| `--dry-run` | Dry run the program - This will not delete or modify any files |
 | `-H, --include-hidden-files` | Include hidden files |
-| `-q, --quiet` | Hide progress indicators |
-| `-v, --verbose` | Display verbose output |
-| `--help` | Print help |
 | `-V, --version` | Print version |
+| `-p, --path <PATH>` | The directory to search for duplicates in [default: .] |
+| `-q, --quiet` | Hide progress indicators |
+| `-r, --recursive` | Recursively search for duplicates |
+| `-v, --verbose` | Display verbose output |
+| `--create-report` | Create a csv report file |
+| `--report-path` | Specify the full path for the report file. Defaults to ./dupefindr-report.csv
+| `--debug` | Display debug information |
+| `--dry-run` | Dry run the program - This will not delete or modify any files |
+| `--exclusion-wildcard <EXCLUSION_WILDCARD>` | Wildcard pattern to exclude. Example: *.txt [default: ] |
+| `--help` | Print help |
+| `-w, --wildcard <WILDCARD>` | Wildcard pattern to search for. Example: *.txt [default: *] |
 
 # NOTE
 
 Do not remove the testdata folder or alter it in any way. This is used by the tests
-
-# KNOWN ISSUES
-
-- [Sometimes the progress display can get messy, especially if there are lot of subfolders and files.](https://github.com/plecos/dupefindr/issues/3) 
 
 ## Building from source
 
