@@ -2544,6 +2544,15 @@ mod tests {
     fn test_terminal_guard() {
         // Create an instance of TerminalGuard that will be dropped when main exits
         let _guard = TerminalGuard;
+        setup_terminal();
         drop(_guard);
+    }
+
+    #[test]
+    fn test_print_banner() {
+        setup_terminal();
+        print_banner();
+        reset_terminal();
+
     }
 }
