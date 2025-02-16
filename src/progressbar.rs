@@ -4,9 +4,7 @@
 //! It was inspired by the `indicatif` crate, but is much simpler and more lightweight.  It also
 //! is written specifically for use with the `crossterm` crate.
 
-use crossterm::cursor::{
-    MoveDown, MoveToColumn, MoveToNextLine, MoveToRow, MoveUp,
-};
+use crossterm::cursor::{MoveDown, MoveToColumn, MoveToNextLine, MoveToRow, MoveUp};
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, ScrollUp};
@@ -41,14 +39,12 @@ pub enum ProgressBarStyle {
 /// # SharedState
 /// The `SharedState` struct is used to hold shared state between `ProgressBar` and `MultiProgress`.
 #[derive(Clone)]
-struct SharedState {
-    
-}
+struct SharedState {}
 
 impl SharedState {
     pub fn instance() -> &'static Mutex<Self> {
         static INSTANCE: OnceLock<Mutex<SharedState>> = OnceLock::new();
-        INSTANCE.get_or_init(|| Mutex::new(SharedState {  }))
+        INSTANCE.get_or_init(|| Mutex::new(SharedState {}))
     }
 }
 
@@ -218,7 +214,7 @@ impl ProgressBar {
             }
             drop(progress);
             self.draw();
-        } 
+        }
     }
 
     /// # set_position
@@ -240,7 +236,7 @@ impl ProgressBar {
             }
             drop(progress);
             self.draw();
-        } 
+        }
     }
 
     /// # get_position
@@ -308,7 +304,10 @@ impl ProgressBar {
         // If the terminal is a TTY, print the message above the progress bar
         if is_terminal {
             // get a lock the shared state instance
-            let mut _guard = self.shared_state.lock().expect("Failed to lock shared state");
+            let mut _guard = self
+                .shared_state
+                .lock()
+                .expect("Failed to lock shared state");
             execute!(stdout, BeginSynchronizedUpdate).unwrap();
             // if we are the bottom of the terminal, scroll up everthing above
             let (_, rows) = crossterm::terminal::size().unwrap();
@@ -449,21 +448,19 @@ impl ProgressBar {
             while *is_spinner_thread_running.lock().unwrap() {
                 if *is_spinning.lock().unwrap() {
                     let mut _guard = shared_state.lock().unwrap();
-                    //let mut stdout = stdout();
                     s.render_spinner(true, None);
-                    //stdout.flush().unwrap();
                     drop(_guard);
                 }
                 yield_now();
                 // Check every 100ms to see if the spinner should stop
                 // this allows the spinner to stop quickly when the main thread
                 // sets is_spinning to false, and provides 100ms for animation of the spinner
-                // for _ in 0..20 {
-                //     if !*is_spinning.lock().unwrap() {
-                //         break;
-                //     }
-                //     thread::sleep(Duration::from_millis(5));
-                // }
+                for _ in 0..19 {
+                    if !*is_spinning.lock().unwrap() {
+                        break;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(5));
+                }
             }
         });
     }
@@ -596,7 +593,6 @@ impl ProgressBar {
             *is_spinner_thread_running = false;
         }
     }
-
 }
 
 /// # MultiProgress
@@ -791,11 +787,16 @@ impl MultiProgress {
         let current_row = crossterm::cursor::position().unwrap().1;
 
         if current_row > (rows - progress_bar.len() as u16) {
-            execute!(stdout, ScrollUp(value), crossterm::cursor::MoveToPreviousLine(value)).unwrap();
+            execute!(
+                stdout,
+                ScrollUp(value),
+                crossterm::cursor::MoveToPreviousLine(value)
+            )
+            .unwrap();
             // todo
             // instead of scrollup which causes flickering and other not nice cosmetics, let's try copyring the lines above
             // into an array, then redrawing everything but the first line.  this may eliminate the flickering issue
-            
+
             *start_row = crossterm::cursor::position().unwrap().1;
         }
     }
@@ -918,7 +919,10 @@ impl MultiProgress {
         let is_terminal: bool = stdout.is_terminal();
         if is_terminal {
             // get a lock the shared state instance
-            let mut _guard = self.shared_state.lock().expect("Failed to lock shared state");
+            let mut _guard = self
+                .shared_state
+                .lock()
+                .expect("Failed to lock shared state");
             self.move_cursor_to_top();
             execute!(
                 stdout,
@@ -948,7 +952,6 @@ impl MultiProgress {
     /// multi_progress.eprintln("Error: Something went wrong");
     /// ```
     pub fn eprintln(&self, message: &str) {
-
         let mut stdout = stdout();
         let is_terminal: bool = stdout.is_terminal();
         if is_terminal {
@@ -1173,7 +1176,6 @@ mod tests {
         progress_bar.eprintln("Loading...");
     }
 
-
     #[test]
     fn test_progress_bar_with_start_spinner() {
         let progress_bar = ProgressBar::new_spinner().with_start_spinner();
@@ -1212,7 +1214,10 @@ mod tests {
     fn test_progress_bar_finish() {
         let progress_bar = ProgressBar::new_spinner().with_start_spinner();
         progress_bar.finish();
-        assert_eq!(*progress_bar.is_spinner_thread_running.lock().unwrap(), false);
+        assert_eq!(
+            *progress_bar.is_spinner_thread_running.lock().unwrap(),
+            false
+        );
     }
 
     #[test]
@@ -1275,7 +1280,10 @@ mod tests {
         let multi_progress = MultiProgress::new();
         let progress_bar = multi_progress.add(ProgressBar::new_spinner().with_start_spinner());
         multi_progress.finish_all();
-        assert_eq!(*progress_bar.is_spinner_thread_running.lock().unwrap(), false);
+        assert_eq!(
+            *progress_bar.is_spinner_thread_running.lock().unwrap(),
+            false
+        );
     }
 
     #[test]
