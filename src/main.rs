@@ -64,6 +64,7 @@ use crossterm::style::{Color, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{cursor, execute, queue, style};
 use glob;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
 //use progressbar::AddLocation;
 use std::collections::HashMap;
@@ -73,12 +74,12 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::thread::yield_now;
-use std::time::Instant;
 use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant};
 use std::{fs, thread};
 use threadpool::ThreadPool;
 
-mod progressbar;
+//mod progressbar;
 
 const BUFFER_READ_SIZE: usize = 1024 * 1024;
 
@@ -477,7 +478,7 @@ fn main() {
     // Create an instance of TerminalGuard that will be dropped when main exits
     let _guard = TerminalGuard;
 
-    // before enabling raw mode, we need to test if the command line args passed in were valid
+    // we need to test if the command line args passed in were valid
     // if they aren't then have print the error and exit
     let args = match Args::try_parse() {
         Ok(args) => args,
@@ -567,24 +568,24 @@ fn setup_ctrlc_handler() {
 /// # setup_terminal
 /// Setup the terminal for the program.
 fn setup_terminal() {
-    let _ = terminal::enable_raw_mode();
+    //let _ = terminal::enable_raw_mode();
 
     // Clear the screen
-    let _ = execute!(
-        stdout(),
-        style::ResetColor,
-        terminal::Clear(ClearType::All),
-        cursor::Hide,
-        cursor::MoveTo(0, 0)
-    );
+    // let _ = execute!(
+    //     stdout(),
+    //     style::ResetColor,
+    //     terminal::Clear(ClearType::All),
+    //     cursor::Hide,
+    //     cursor::MoveTo(0, 0)
+    // );
 }
 
 /// # reset_terminal
 /// Reset the terminal.
 fn reset_terminal() {
-    io::stdout().flush().unwrap();
-    let _ = execute!(stdout(), style::ResetColor, cursor::Show,);
-    let _ = terminal::disable_raw_mode();
+    // io::stdout().flush().unwrap();
+    // let _ = execute!(stdout(), style::ResetColor, cursor::Show,);
+    //let _ = terminal::disable_raw_mode();
 }
 
 /// # get_command_line_arguments
@@ -654,7 +655,8 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
 
     // get the files in the directory
     // it calls itself as it traverses the tree if recursive is set
-    let result = get_files_in_directory(args, folder_path, None);
+    let multi = MultiProgress::new();
+    let result = get_files_in_directory(args, folder_path, &multi, true);
     let files = match result {
         Ok(files) => files,
         Err(e) => {
@@ -725,9 +727,10 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
 fn get_files_in_directory(
     args: &Args,
     folder_path: String,
-    multi: Option<progressbar::MultiProgress>,
+    multi: &MultiProgress,
+    first_run: bool
 ) -> Result<Vec<FileInfo>, io::Error> {
-    let multi = multi.unwrap_or_else(progressbar::MultiProgress::new);
+    
     let mut files: Vec<FileInfo> = Vec::new();
 
     // check if the path is a directory
@@ -760,21 +763,19 @@ fn get_files_in_directory(
 
     // only add a spinner if the multi is empty
     let bar = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
+        multi.add(ProgressBar::hidden())
     } else {
-        if multi.get_progress_bars_count() == 0 {
-            multi.println("Processing files...");
-            multi.add(progressbar::ProgressBar::hidden())
-            // multi.add_with_location(
-            //     progressbar::ProgressBar::new_spinner().with_message("Processing files..."),
-            //     AddLocation::Bottom,
-            // )
+        // only add the spinner if this is the top level
+        if first_run {
+            let b = multi.add(ProgressBar::new_spinner().with_message("Processing files..."));
+            b.enable_steady_tick(Duration::from_millis(100));
+            b.set_style(ProgressStyle::with_template("{spinner:.blue} {msg}").unwrap());
+            b
         } else {
-            multi.add(progressbar::ProgressBar::hidden())
+            multi.add(ProgressBar::hidden())
         }
     };
-    multi.draw_all();
-    bar.start_spinner();
+
 
     let mut folder_count = 0;
     let mut file_count = 0;
@@ -831,14 +832,19 @@ fn get_files_in_directory(
     // process the folders
     if folder_count != 0 {
         let bar2 = if args.shared.quiet {
-            multi.add(progressbar::ProgressBar::hidden())
+            multi.add(ProgressBar::hidden())
         } else {
-            multi.add(progressbar::ProgressBar::new(folder_count))
+            let b = multi.add(ProgressBar::new(folder_count));
+            b.set_style(
+                ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+                    .unwrap()
+                    //.progress_chars("##-"),
+            );
+            b
         };
-        multi.draw_all();
 
         for fld in folders.iter() {
-            multi.set_message(&bar2, format!("Folder {}", fld.display()).as_str());
+            bar2.set_message(format!("Folder {}", fld.display()));
             let hidden;
             // check if the folder is hidden - use appropriate code for the OS
             #[cfg(not(target_os = "windows"))]
@@ -864,7 +870,7 @@ fn get_files_in_directory(
                             fld.file_name().unwrap().to_str().unwrap()
                         ));
                     }
-                    multi.increment(&bar2, 1);
+                    bar2.inc(1);
                     continue;
                 }
             }
@@ -877,7 +883,7 @@ fn get_files_in_directory(
                         fld.file_name().unwrap().to_str().unwrap()
                     ));
                 }
-                multi.increment(&bar2, 1);
+                bar2.inc(1);
             } else {
                 // if we are recursive, then process the sub folders
                 let path = fld.as_path();
@@ -885,31 +891,39 @@ fn get_files_in_directory(
                 let sub_files = get_files_in_directory(
                     args,
                     path.to_str().unwrap().to_string(),
-                    Some(multi.clone()),
+                    multi,
+                    false,
                 )?;
                 // add results to our files vector
                 files.extend(sub_files);
-                multi.increment(&bar2, 1);
+                bar2.inc(1);
             }
         }
 
         // remove the progress bar for this folder
-        bar2.finish();
+        bar2.finish_and_clear();
         multi.remove(&bar2);
     }
 
     // now process files
     if file_count != 0 {
         let bar2 = if args.shared.quiet {
-            multi.add(progressbar::ProgressBar::hidden())
+            multi.add(ProgressBar::hidden())
         } else {
-            multi.add(progressbar::ProgressBar::new(file_count))
+            multi.add(ProgressBar::new(file_count))
         };
-        multi.draw_all();
+
+        if !bar2.is_hidden() {
+            bar2.set_style(
+                ProgressStyle::with_template("{bar:40.green/yellow} {pos:>7}/{len:7} {msg}")
+                    .unwrap()
+                    .progress_chars("##-"),
+            );
+        }
 
         for entry in entries.iter() {
             let path = entry.as_path();
-            let _ = multi.set_message(&bar2, format!("Processing: {}", path.display()).as_str());
+            bar2.set_message(format!("Processing: {}", path.display()));
 
             if path.is_file() {
                 // determine if the file matches the wildcard
@@ -922,7 +936,7 @@ fn get_files_in_directory(
                             path.to_str().unwrap()
                         ));
                     }
-                    multi.increment(&bar2, 1);
+                    bar2.inc(1);
                     continue;
                 }
                 // determine if the file matches the exclusion wildcard
@@ -937,7 +951,7 @@ fn get_files_in_directory(
                                 path.to_str().unwrap()
                             ));
                         }
-                        bar2.increment(1);
+                        bar2.inc(1);
                         continue;
                     }
                 }
@@ -963,7 +977,7 @@ fn get_files_in_directory(
                             .println(&format!("Ignoring hidden file: {}", path.to_str().unwrap()));
                     }
 
-                    multi.increment(&bar2, 1);
+                    bar2.inc(1);
                     continue;
                 }
                 // get the file metadata
@@ -976,7 +990,7 @@ fn get_files_in_directory(
                             .println(&format!("Ignoring empty file: {}", path.to_str().unwrap()));
                     }
 
-                    multi.increment(&bar2, 1);
+                    bar2.inc(1);
                     continue;
                 }
 
@@ -1008,7 +1022,7 @@ fn get_files_in_directory(
                         size
                     ));
                 }
-                multi.increment(&bar2, 1);
+                bar2.inc(1);
             }
         }
 
@@ -1016,7 +1030,7 @@ fn get_files_in_directory(
         multi.remove(&bar2);
     }
 
-    bar.finish();
+    bar.finish_and_clear();
     multi.remove(&bar);
     Ok(files)
 }
@@ -1028,30 +1042,28 @@ fn get_files_in_directory(
 /// * `running` - The running flag.
 fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec<FileInfo>> {
     let mut hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
-    let multi = progressbar::MultiProgress::new();
+    let multi = MultiProgress::new();
     let workers = get_number_of_threads(args);
 
     let bar2 = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
+        multi.add(ProgressBar::hidden())
     } else {
-        multi.println("Identifying duplicates...");
-        multi.add(progressbar::ProgressBar::hidden())
-        // multi.add_with_location(
-        //     progressbar::ProgressBar::new_spinner().with_message("Identifying duplicates..."),
-        //     AddLocation::Bottom,
-        // )
+        multi.add(ProgressBar::new_spinner().with_message("Identifying duplicates..."))
     };
+
+    bar2.enable_steady_tick(Duration::from_millis(100));
 
     let bar = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
+        multi.add(ProgressBar::hidden())
     } else {
-        multi.add(progressbar::ProgressBar::new(
-            files.len().try_into().unwrap(),
-        ))
+        multi.add(ProgressBar::new(files.len().try_into().unwrap()))
     };
 
-    multi.draw_all();
-    bar2.start_spinner();
+    bar.set_style(
+        ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
 
     // we will use a thread pool to optimize the hashing process
     // the thread pool will use one thread per cpu core
@@ -1107,7 +1119,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
             let vec = hash_map.get_mut(&hash_string).unwrap();
             vec.push(file);
         }
-        multi.increment(&bar, 1);
+        bar.inc(1);
     });
 
     let _ = bar.finish();
@@ -1115,7 +1127,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
 
     multi.remove(&bar2);
     multi.remove(&bar);
-    multi.finish_all();
+    multi.clear().unwrap();
 
     hash_map
 }
@@ -1135,29 +1147,27 @@ fn process_duplicates<T: FileOperations>(
 ) -> Vec<DuplicateFileSet> {
     let mut new_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
-    let mut multi = progressbar::MultiProgress::new();
+    let mut multi = MultiProgress::new();
 
     let bar2 = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
+        multi.add(ProgressBar::hidden())
     } else {
-        multi.println("Processing duplicates...");
-        multi.add(progressbar::ProgressBar::hidden())
-        // multi.add_with_location(
-        //     progressbar::ProgressBar::new_spinner().with_message("Processing duplicates..."),
-        //     AddLocation::Bottom,
-        // )
+        multi.add(ProgressBar::new_spinner().with_message("Processing duplicates..."))
     };
+
+    bar2.enable_steady_tick(Duration::from_millis(100));
 
     let bar = if args.shared.quiet {
-        multi.add(progressbar::ProgressBar::hidden())
+        multi.add(ProgressBar::hidden())
     } else {
-        multi.add(progressbar::ProgressBar::new(
-            hash_map.len().try_into().unwrap(),
-        ))
+        multi.add(ProgressBar::new(hash_map.len().try_into().unwrap()))
     };
 
-    multi.draw_all();
-    bar2.start_spinner();
+    bar.set_style(
+        ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
 
     // get the method
     let method = match &args.command {
@@ -1173,7 +1183,7 @@ fn process_duplicates<T: FileOperations>(
         let _ = bar2.finish();
         multi.remove(&bar2);
         multi.remove(&bar);
-        multi.finish_all();
+        multi.clear().unwrap();
     }
 
     // remove all entries from hash_map where the files.len() <= 1
@@ -1227,14 +1237,14 @@ fn process_duplicates<T: FileOperations>(
 
         dup_results.push(dup_fileset);
 
-        multi.increment(&bar, 1);
+        bar.inc(1);
     }
 
     let _ = bar.finish();
     let _ = bar2.finish();
     multi.remove(&bar2);
     multi.remove(&bar);
-    multi.finish_all();
+    multi.clear().unwrap();
     dup_results
 }
 
@@ -1253,7 +1263,7 @@ fn process_a_duplicate_file<T: FileOperations>(
     args: &Args,
     file: &FileInfo,
     hash: &str,
-    multi: &mut progressbar::MultiProgress,
+    multi: &mut MultiProgress,
 ) -> Result<(), std::io::Error> {
     let source = &file.path;
     //let file_name = Path::new(&file.path).file_name().unwrap().to_str().unwrap();
@@ -1363,7 +1373,7 @@ fn process_a_duplicate_file<T: FileOperations>(
             }
             Commands::CopyDuplicates { .. } => {
                 if let Err(result) = fs::create_dir_all(&destination_folder) {
-                    multi.eprintln(
+                    let _ = multi.println(
                         format!(
                             "Error creating directory: {} - {}",
                             destination_folder, result
@@ -1409,10 +1419,7 @@ fn process_a_duplicate_file<T: FileOperations>(
 /// * `Result<String, std::io::Error>` - The MD5 hash of the file.
 /// # Errors
 /// * `std::io::Error` - An error occurred during the operation.
-fn get_hash_of_file(
-    file_path: &str,
-    _bar: &progressbar::ProgressBar,
-) -> Result<String, std::io::Error> {
+fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> Result<String, std::io::Error> {
     let result = std::fs::File::open(file_path);
     match result {
         Ok(mut f) => {
@@ -1462,7 +1469,7 @@ fn select_duplicate_files(
     files: &Vec<FileInfo>,
     position_duplicates: usize,
     total_duplicates: usize,
-    _bar: &progressbar::ProgressBar,
+    _bar: &ProgressBar,
 ) -> Result<DuplicateFileSet, std::io::Error> {
     let mut dup_fileset = DuplicateFileSet {
         hash: hash.to_string(),
@@ -1825,8 +1832,8 @@ mod tests {
     #[test]
     fn test_get_files_in_directory() {
         let args = create_default_command_line_arguments();
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         // under windows .testhidden is not considered a hidden file
         #[cfg(target_os = "windows")]
         assert_eq!(files.len(), 6);
@@ -1838,8 +1845,8 @@ mod tests {
     fn test_get_files_in_directory_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         // under windows .testhidden is not considered a hidden file
         #[cfg(target_os = "windows")]
         assert_eq!(files.len(), 6);
@@ -1851,8 +1858,8 @@ mod tests {
     fn test_get_files_in_directory_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.wildcard = "*testdupe*.txt".to_string();
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         assert_eq!(files.len(), 4);
     }
 
@@ -1860,8 +1867,8 @@ mod tests {
     fn test_get_files_in_directory_exclusion_wildcard() {
         let mut args = create_default_command_line_arguments();
         args.shared.exclusion_wildcard = "*testdupe*.txt".to_string();
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         // under windows .testhidden is not considered a hidden file
         #[cfg(target_os = "windows")]
         assert_eq!(files.len(), 2);
@@ -1873,8 +1880,8 @@ mod tests {
     fn test_get_files_in_directory_include_empty() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_empty_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         #[cfg(target_os = "windows")]
         assert_eq!(files.len(), 8);
         #[cfg(not(target_os = "windows"))]
@@ -1885,8 +1892,8 @@ mod tests {
     fn test_get_files_in_directory_include_hidden() {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         assert_eq!(files.len(), 6);
     }
 
@@ -1895,8 +1902,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.include_hidden_files = true;
         args.shared.include_empty_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         assert_eq!(files.len(), 8);
     }
 
@@ -1904,8 +1911,8 @@ mod tests {
     fn test_get_files_in_directory_include_recursive() {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         #[cfg(target_os = "windows")]
         assert_eq!(files.len(), 19);
         #[cfg(not(target_os = "windows"))]
@@ -1917,8 +1924,8 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.recursive = true;
         args.shared.include_hidden_files = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         assert_eq!(files.len(), 19);
     }
 
@@ -1926,17 +1933,17 @@ mod tests {
     fn test_get_files_in_directory_bad_path() {
         let mut args = create_default_command_line_arguments();
         args.shared.path = "badpath!!!".to_string();
-
-        let result = get_files_in_directory(&args, "badpath!!!".to_string(), None);
+        let multi = MultiProgress::new();
+        let result = get_files_in_directory(&args, "badpath!!!".to_string(), &multi, true);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_files_in_directory_notafolder() {
         let args = create_default_command_line_arguments();
-
+        let multi = MultiProgress::new();
         let result =
-            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), None);
+            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), &multi, true);
         assert!(result.is_err());
     }
 
@@ -1945,7 +1952,7 @@ mod tests {
         let args = create_default_command_line_arguments();
         let hash = get_hash_of_file(
             &format!("{}//testdupe1.txt", args.shared.path.clone()),
-            &progressbar::ProgressBar::new_spinner().with_message("none"),
+            &ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_ok());
         assert_eq!(hash.unwrap(), "8c91214730e59f67bd46d1855156e762");
@@ -1957,7 +1964,7 @@ mod tests {
         let args = create_default_command_line_arguments();
         let hash = get_hash_of_file(
             &format!("{}//testdupe1-notfound.txt", args.shared.path.clone()),
-            &progressbar::ProgressBar::new_spinner().with_message("none"),
+            &ProgressBar::new_spinner().with_message("none"),
         );
         assert!(hash.is_err());
     }
@@ -1990,12 +1997,12 @@ mod tests {
     #[test]
     fn test_start_search_copy() {
         let mut args = create_default_command_line_arguments();
-        args.command = Commands::CopyDuplicates { 
+        args.command = Commands::CopyDuplicates {
             location: "/tmp".to_string(),
             method: DuplicateSelectionMethod::Newest,
-            flatten: false, 
-            no_hash_folder: false, 
-            overwrite: true
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: true,
         };
         let file_ops = MockFileOperationsOk;
 
@@ -2006,12 +2013,12 @@ mod tests {
     #[test]
     fn test_start_search_move() {
         let mut args = create_default_command_line_arguments();
-        args.command = Commands::MoveDuplicates { 
+        args.command = Commands::MoveDuplicates {
             location: "/tmp".to_string(),
             method: DuplicateSelectionMethod::Newest,
-            flatten: false, 
-            no_hash_folder: false, 
-            overwrite: true
+            flatten: false,
+            no_hash_folder: false,
+            overwrite: true,
         };
         let file_ops = MockFileOperationsOk;
 
@@ -2022,7 +2029,7 @@ mod tests {
     #[test]
     fn test_start_search_delete() {
         let mut args = create_default_command_line_arguments();
-        args.command = Commands::DeleteDuplicates { 
+        args.command = Commands::DeleteDuplicates {
             method: DuplicateSelectionMethod::Newest,
         };
         let file_ops = MockFileOperationsOk;
@@ -2157,8 +2164,8 @@ mod tests {
     #[test]
     fn test_identify_duplicates() {
         let args = create_default_command_line_arguments();
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
@@ -2174,8 +2181,8 @@ mod tests {
     fn test_identify_duplicates_quiet() {
         let mut args = create_default_command_line_arguments();
         args.shared.quiet = true;
-
-        let files = get_files_in_directory(&args, args.shared.path.clone(), None).unwrap();
+        let multi = MultiProgress::new();
+        let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         let hash_map = identify_duplicates(&args, files);
         // duplicates are entries in hash_map with more than 1 file
         let mut duplicates_found = 0;
@@ -2248,7 +2255,7 @@ mod tests {
             created_at: Utc::now() - chrono::Duration::days(2),
             modified_at: Utc::now() - chrono::Duration::days(2),
         });
-        let bar = progressbar::ProgressBar::new_spinner().with_message("none");
+        let bar = ProgressBar::new_spinner().with_message("none");
         let dup_fileset = select_duplicate_files(
             args.command.clone(),
             DuplicateSelectionMethod::Newest,
@@ -2301,7 +2308,7 @@ mod tests {
             created_at: Utc::now() - chrono::Duration::days(2),
             modified_at: Utc::now() - chrono::Duration::days(2),
         });
-        let bar = progressbar::ProgressBar::new_spinner().with_message("none");
+        let bar = ProgressBar::new_spinner().with_message("none");
         let dup_fileset = select_duplicate_files(
             args.command.clone(),
             DuplicateSelectionMethod::Oldest,
@@ -2337,7 +2344,7 @@ mod tests {
     fn test_select_duplicate_files_empty_files() {
         let args = create_default_command_line_arguments();
         let files = Vec::new();
-        let bar = progressbar::ProgressBar::new_spinner().with_message("none");
+        let bar = ProgressBar::new_spinner().with_message("none");
         let dup_fileset = select_duplicate_files(
             args.command.clone(),
             DuplicateSelectionMethod::Oldest,
@@ -2356,7 +2363,7 @@ mod tests {
     fn test_process_a_duplicate_file_badfilepath() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2376,7 +2383,7 @@ mod tests {
     fn test_process_a_duplicate_file_find() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2397,7 +2404,7 @@ mod tests {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
         args.shared.quiet = true;
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2420,7 +2427,7 @@ mod tests {
         args.command = Commands::DeleteDuplicates {
             method: DuplicateSelectionMethod::Newest,
         };
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2442,7 +2449,7 @@ mod tests {
         args.command = Commands::DeleteDuplicates {
             method: DuplicateSelectionMethod::Newest,
         };
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2468,7 +2475,7 @@ mod tests {
             no_hash_folder: false,
             overwrite: false,
         };
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2494,7 +2501,7 @@ mod tests {
             no_hash_folder: false,
             overwrite: false,
         };
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2520,7 +2527,7 @@ mod tests {
             no_hash_folder: false,
             overwrite: false,
         };
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2546,7 +2553,7 @@ mod tests {
             no_hash_folder: false,
             overwrite: false,
         };
-        let mut multi = progressbar::MultiProgress::new();
+        let mut multi = MultiProgress::new();
         // fake file
         let file_info = FileInfo {
             path: "xxx.xxx".to_string(),
@@ -2614,6 +2621,5 @@ mod tests {
         setup_terminal();
         print_banner();
         reset_terminal();
-
     }
 }
