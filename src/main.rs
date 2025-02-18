@@ -58,17 +58,20 @@
 ///
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
-use crossterm::cursor::MoveToRow;
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
-use crossterm::style::{Color, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{self, Clear, ClearType};
-use crossterm::{cursor, execute, queue, style};
+use dialoguer::console::style;
+// use crossterm::cursor::MoveToRow;
+// use crossterm::event::{self, Event, KeyCode, KeyEvent};
+// use crossterm::style::{Color, ResetColor, SetAttribute, SetForegroundColor};
+// use crossterm::terminal::{self, Clear, ClearType};
+// use crossterm::{cursor, execute, queue, style};
+use dialoguer::theme::ColorfulTheme;
+use dialoguer::Select;
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
 //use progressbar::AddLocation;
 use std::collections::HashMap;
-use std::io::{self, stdout, Read, Write};
+use std::io::{self, Read};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -418,24 +421,24 @@ impl Drop for TerminalGuard {
 /// myprintln!();
 /// myprintln!("Hello, world!");
 /// ```
-macro_rules! myprintln {
-    () => {{
-        let _ = execute!(
-            stdout(),
-            cursor::MoveToNextLine(1),
-        );
-        io::stdout().flush().unwrap();
-    }};
-    ($($arg:tt)*) => {{
-        let formatted_string = format!($($arg)*);
-        let _ = execute!(
-            stdout(),
-            style::Print(&formatted_string),
-            cursor::MoveToNextLine(1),
-        );
-        io::stdout().flush().unwrap();
-    }};
-}
+// macro_rules! myprintln {
+//     () => {{
+//         let _ = execute!(
+//             stdout(),
+//             cursor::MoveToNextLine(1),
+//         );
+//         io::stdout().flush().unwrap();
+//     }};
+//     ($($arg:tt)*) => {{
+//         let formatted_string = format!($($arg)*);
+//         let _ = execute!(
+//             stdout(),
+//             style::Print(&formatted_string),
+//             cursor::MoveToNextLine(1),
+//         );
+//         io::stdout().flush().unwrap();
+//     }};
+// }
 
 /// # myeprintln
 /// Macro to print a line to the terminal in red.
@@ -446,26 +449,26 @@ macro_rules! myprintln {
 /// myeprintln!();
 /// myeprintln!("Error: Something went wrong");
 /// ```
-macro_rules! myeprintln {
-    () => {{
-        let _ = execute!(
-            stdout(),
-            cursor::MoveToNextLine(1),
-        );
-        io::stdout().flush().unwrap();
-    }};
-    ($($arg:tt)*) => {{
-        let formatted_string = format!($($arg)*);
-        let _ = execute!(
-            stdout(),
-            style::SetForegroundColor(Color::Red),
-            style::Print(&formatted_string),
-            style::ResetColor,
-            cursor::MoveToNextLine(1),
-        );
-        io::stdout().flush().unwrap();
-    }};
-}
+// macro_rules! myeprintln {
+//     () => {{
+//         let _ = execute!(
+//             stdout(),
+//             cursor::MoveToNextLine(1),
+//         );
+//         io::stdout().flush().unwrap();
+//     }};
+//     ($($arg:tt)*) => {{
+//         let formatted_string = format!($($arg)*);
+//         let _ = execute!(
+//             stdout(),
+//             style::SetForegroundColor(Color::Red),
+//             style::Print(&formatted_string),
+//             style::ResetColor,
+//             cursor::MoveToNextLine(1),
+//         );
+//         io::stdout().flush().unwrap();
+//     }};
+// }
 
 /// * `main` - Entry point of the program.
 #[cfg(not(tarpaulin_include))]
@@ -483,8 +486,8 @@ fn main() {
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(e) => {
-            myprintln!("{}", e);
-            myprintln!();
+            println!("{}", e);
+            println!();
             std::process::exit(-1);
         }
     };
@@ -498,28 +501,28 @@ fn main() {
         std::process::exit(-1);
     }
 
-    setup_ctrlc_handler();
+    //setup_ctrlc_handler();
 
     match start_search(&file_ops, &args) {
         Ok(search_results) => {
             let duration = start.elapsed();
-            myprintln!("Elapsed time: {}", humantime::format_duration(duration));
+            println!("Elapsed time: {}", humantime::format_duration(duration));
             if search_results.number_duplicates == 0 {
-                myprintln!("No duplicates found");
+                println!("No duplicates found");
             } else {
-                myprintln!(
+                println!(
                     "Found {} set of duplicates with total size {}",
                     search_results.number_duplicates,
                     bytesize::ByteSize(search_results.total_size.try_into().unwrap())
                 );
-                myprintln!();
-                myprintln!();
+                println!();
+                println!();
             }
             reset_terminal();
             std::process::exit(search_results.number_duplicates.try_into().unwrap());
         }
         Err(e) => {
-            myeprintln!("Error: {}", e);
+            eprintln!("Error: {}", e);
             reset_terminal();
             std::process::exit(-1)
         }
@@ -529,41 +532,43 @@ fn main() {
 /// # print_banner
 /// Function to print the banner to the terminal.
 fn print_banner() {
-    let _ = queue!(
-        stdout(),
-        SetAttribute(style::Attribute::Bold),
-        style::Print("dupefindr"),
-        cursor::MoveToNextLine(2),
-        SetAttribute(style::Attribute::Reset),
-    );
-    let _ = stdout().flush();
+    println!("{}", style("dupefindr").bold());
+
+    // let _ = queue!(
+    //     stdout(),
+    //     SetAttribute(style::Attribute::Bold),
+    //     style::Print("dupefindr"),
+    //     cursor::MoveToNextLine(2),
+    //     SetAttribute(style::Attribute::Reset),
+    // );
+    // let _ = stdout().flush();
 }
 
 /// # setup_ctrlc_handler
 /// Function to setup the ctrl-c handler.
-#[cfg(not(tarpaulin_include))]
-fn setup_ctrlc_handler() {
-    // spawn a thread that will get key events and check for ctrl-c
-    std::thread::spawn(move || -> Result<(), anyhow::Error> {
-        loop {
-            // using a 10 ms timeout to be cpu friendly
-            if event::poll(std::time::Duration::from_millis(10))? {
-                if let Event::Key(key_event) = event::read()? {
-                    if key_event.code == KeyCode::Char('c')
-                        && key_event
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                    {
-                        myeprintln!("CTRL-C detected - program terminated.");
-                        std::process::exit(-1);
-                    }
-                }
-            } else {
-                yield_now();
-            }
-        }
-    });
-}
+//#[cfg(not(tarpaulin_include))]
+// fn setup_ctrlc_handler() {
+//     // spawn a thread that will get key events and check for ctrl-c
+//     std::thread::spawn(move || -> Result<(), anyhow::Error> {
+//         loop {
+//             // using a 10 ms timeout to be cpu friendly
+//             if event::poll(std::time::Duration::from_millis(10))? {
+//                 if let Event::Key(key_event) = event::read()? {
+//                     if key_event.code == KeyCode::Char('c')
+//                         && key_event
+//                             .modifiers
+//                             .contains(crossterm::event::KeyModifiers::CONTROL)
+//                     {
+//                         eprintln!("CTRL-C detected - program terminated.");
+//                         std::process::exit(-1);
+//                     }
+//                 }
+//             } else {
+//                 yield_now();
+//             }
+//         }
+//     });
+// }
 
 /// # setup_terminal
 /// Setup the terminal for the program.
@@ -594,23 +599,23 @@ fn reset_terminal() {
 fn get_command_line_arguments(args: &Args) -> Result<(), std::io::Error> {
     if args.shared.debug {
         let default_parallelism_approx = num_cpus::get();
-        myprintln!("Command: {:?}", args.command);
-        myprintln!("Searching for duplicates in: {}", args.shared.path);
-        myprintln!(
+        println!("Command: {:?}", args.command);
+        println!("Searching for duplicates in: {}", args.shared.path);
+        println!(
             "Recursively searching for duplicates: {}",
             args.shared.recursive
         );
-        myprintln!("Include empty files: {}", args.shared.include_empty_files);
-        myprintln!("Dry run: {}", args.shared.dry_run);
-        myprintln!("Include hidden files: {}", args.shared.include_hidden_files);
-        myprintln!("Verbose: {}", args.shared.verbose);
-        myprintln!("Quiet: {}", args.shared.quiet);
-        myprintln!("Wildcard: {}", args.shared.wildcard);
-        myprintln!("Exclusion wildcard: {}", args.shared.exclusion_wildcard);
-        myprintln!("Available cpus: {}", default_parallelism_approx);
-        myprintln!("Create Report: {}", args.shared.create_report);
-        myprintln!("Report Path: {}", args.shared.report_path);
-        myprintln!();
+        println!("Include empty files: {}", args.shared.include_empty_files);
+        println!("Dry run: {}", args.shared.dry_run);
+        println!("Include hidden files: {}", args.shared.include_hidden_files);
+        println!("Verbose: {}", args.shared.verbose);
+        println!("Quiet: {}", args.shared.quiet);
+        println!("Wildcard: {}", args.shared.wildcard);
+        println!("Exclusion wildcard: {}", args.shared.exclusion_wildcard);
+        println!("Available cpus: {}", default_parallelism_approx);
+        println!("Create Report: {}", args.shared.create_report);
+        println!("Report Path: {}", args.shared.report_path);
+        println!();
     }
 
     // validate
@@ -619,7 +624,7 @@ fn get_command_line_arguments(args: &Args) -> Result<(), std::io::Error> {
     if args.shared.create_report {
         // attempt to create a file specified by report_path
         if let Err(e) = std::fs::File::create(&args.shared.report_path) {
-            myeprintln!("Invalid report file path: {}", e);
+            eprintln!("Invalid report file path: {}", e);
             return Err(e);
         }
     }
@@ -660,12 +665,12 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
     let files = match result {
         Ok(files) => files,
         Err(e) => {
-            myprintln!("Error: {}", e);
+            println!("Error: {}", e);
             return Err(e);
         }
     };
     if args.shared.verbose {
-        myprintln!("Found {} files", files.len());
+        println!("Found {} files", files.len());
     }
 
     // identify the duplicates
@@ -678,7 +683,7 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
     let mut duplicates_total_size: i64 = 0;
     for dup_fileset in dup_fileset_vec.iter() {
         if args.shared.verbose {
-            myprintln!(
+            println!(
                 "Found {} duplicates for hash: {}",
                 dup_fileset.extras.len(),
                 dup_fileset.hash
@@ -686,7 +691,7 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
         }
         for file in &dup_fileset.extras {
             if args.shared.verbose {
-                myprintln!(
+                println!(
                     "File: {} [created: {}] [modified: {}] [{} bytes]",
                     file.path,
                     file.created_at.to_rfc2822(),
@@ -696,7 +701,7 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
             }
             duplicates_total_size += file.size as i64;
             if args.shared.verbose {
-                myprintln!();
+                println!();
             }
         }
     }
@@ -728,16 +733,15 @@ fn get_files_in_directory(
     args: &Args,
     folder_path: String,
     multi: &MultiProgress,
-    first_run: bool
+    first_run: bool,
 ) -> Result<Vec<FileInfo>, io::Error> {
-    
     let mut files: Vec<FileInfo> = Vec::new();
 
     // check if the path is a directory
     match fs::metadata(folder_path.as_str()) {
         Ok(metadata) => {
             if !metadata.is_dir() {
-                myeprintln!("The path provided {} is not a directory", folder_path);
+                eprintln!("The path provided {} is not a directory", folder_path);
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "The path provided is not a directory",
@@ -745,7 +749,7 @@ fn get_files_in_directory(
             }
         }
         Err(e) => {
-            myeprintln!("Error calling fs::metadata with path {}", folder_path);
+            eprintln!("Error calling fs::metadata with path {}", folder_path);
             return Err(e);
         }
     }
@@ -775,7 +779,6 @@ fn get_files_in_directory(
             multi.add(ProgressBar::hidden())
         }
     };
-
 
     let mut folder_count = 0;
     let mut file_count = 0;
@@ -836,9 +839,7 @@ fn get_files_in_directory(
         } else {
             let b = multi.add(ProgressBar::new(folder_count));
             b.set_style(
-                ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-                    .unwrap()
-                    //.progress_chars("##-"),
+                ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} {msg}").unwrap(), //.progress_chars("##-"),
             );
             b
         };
@@ -888,12 +889,8 @@ fn get_files_in_directory(
                 // if we are recursive, then process the sub folders
                 let path = fld.as_path();
                 // recursion call
-                let sub_files = get_files_in_directory(
-                    args,
-                    path.to_str().unwrap().to_string(),
-                    multi,
-                    false,
-                )?;
+                let sub_files =
+                    get_files_in_directory(args, path.to_str().unwrap().to_string(), multi, false)?;
                 // add results to our files vector
                 files.extend(sub_files);
                 bar2.inc(1);
@@ -1085,7 +1082,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
             match hash_result {
                 Ok(hash_string) => tx.send((hash_string, file.clone())).unwrap(),
                 Err(e) => {
-                    myeprintln!("{}", e);
+                    eprintln!("{}", e);
                     return tx.send((String::new(), file.clone())).unwrap();
                 }
             }
@@ -1216,7 +1213,7 @@ fn process_duplicates<T: FileOperations>(
                 if e.kind() == std::io::ErrorKind::Interrupted {
                     break;
                 } else {
-                    myeprintln!("Error selecting duplicate files: {}", e);
+                    eprintln!("Error selecting duplicate files: {}", e);
                     continue;
                 }
             }
@@ -1444,7 +1441,7 @@ fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> Result<String, std::
             Ok(format!("{:x}", hash))
         }
         Err(e) => {
-            myeprintln!("{}", format!("{:?}", e));
+            eprintln!("{}", format!("{:?}", e));
             Err(e)
         }
     }
@@ -1506,178 +1503,76 @@ fn select_duplicate_files(
         // not sure how to test the interactive code right now
         #[cfg(not(tarpaulin_include))]
         DuplicateSelectionMethod::Interactive => {
-            use crossterm::execute;
-            let mut selected_index = 0;
-
-            let _ = execute!(
-                stdout(),
-                style::ResetColor,
-                cursor::Hide,
-                terminal::EnterAlternateScreen
+            dup_fileset.extras = files.clone();
+            let title = format!(
+                "Duplicate File Interactive Selector [{}/{}]",
+                position_duplicates, total_duplicates
             );
+            println!();
+            println!("{}", style(title).bold());
+            println!();
+            println!("Press ENTER to keep the selected file and process the rest");
+            println!("Press ESC to exit");
+            println!();
+            println!("{}", format!("For hash [{}]:", hash));
+            println!();
 
-            let _ = queue!(
-                stdout(),
-                SetAttribute(style::Attribute::Bold),
-                style::Print(format!(
-                    "Duplicate File Interactive Selector [{}/{}]",
-                    position_duplicates, total_duplicates
-                )),
-                cursor::MoveToNextLine(1),
-                SetAttribute(style::Attribute::Reset),
-                style::Print(""),
-                cursor::MoveToNextLine(1),
-                style::Print("Press UP/DOWN ARROW keys to move the selector"),
-                cursor::MoveToNextLine(1),
-            );
-            if files.len() > 5 {
-                let _ = queue!(
-                    stdout(),
-                    style::Print("Press LEFT/RIGHT ARROW keys to switch pages of file "),
-                    cursor::MoveToNextLine(1),
-                );
-            }
-            let _ = queue!(
-                stdout(),
-                style::Print("Press ENTER to keep the selected file and process the other files"),
-                cursor::MoveToNextLine(1),
-                style::Print("Press S to skip this duplicate and move to the next"),
-                cursor::MoveToNextLine(1),
-                style::Print("Press ESC to stop processing duplicates"),
-                cursor::MoveToNextLine(1),
-                style::Print(""),
-                cursor::MoveToNextLine(1),
-                style::Print(format!("For hash [{}]:", hash)),
-                cursor::MoveToNextLine(1),
-            );
-
-            let start_row = crossterm::cursor::position().unwrap().1;
-            let mut current_page = 1;
-            let total_pages = files.len() / 5;
-
-            loop {
-                let _ = queue!(
-                    stdout(),
-                    MoveToRow(start_row),
-                    style::Print(""),
-                    cursor::MoveToNextLine(1)
-                );
-                let _ = queue!(
-                    stdout(),
-                    SetAttribute(style::Attribute::Underlined),
-                    style::Print(format!(
-                        "  {:<50} {:<20} {:<20} {}/{}",
-                        "File", "Created", "Modified", current_page, total_pages
-                    )),
-                    SetAttribute(style::Attribute::Reset),
-                    cursor::MoveToNextLine(1)
-                );
-                // print out list of files to the user
-                let start_index = (current_page - 1) * 5;
-                let end_index = std::cmp::min(start_index + 5, files.len());
-                for (i, item) in files[start_index..end_index].iter().enumerate() {
-                    if i == selected_index {
-                        let _ = queue!(
-                            stdout(),
-                            Clear(ClearType::CurrentLine),
-                            SetForegroundColor(Color::Yellow),
-                            style::Print(format!(
-                                "> {:<50} {:<20} {:<20}",
-                                item.path,
-                                item.created_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d %H:%M:%S"),
-                                item.modified_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d %H:%M:%S")
-                            )),
-                            ResetColor,
-                            cursor::MoveToNextLine(1)
-                        );
-                    } else {
-                        let _ = queue!(
-                            stdout(),
-                            Clear(ClearType::CurrentLine),
-                            SetForegroundColor(Color::Red),
-                            style::Print(format!(
-                                "  {:<50} {:<20} {:<20}",
-                                item.path,
-                                item.created_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d %H:%M:%S"),
-                                item.modified_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d %H:%M:%S")
-                            )),
-                            ResetColor,
-                            cursor::MoveToNextLine(1)
-                        );
+            match get_interactive_selection(files) {
+                Ok(f) => {
+                    if f.is_none() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "User pressed ESC",
+                        ));
+                    }
+                    else {
+                        dup_fileset.keeper = f;
                     }
                 }
-                let _ = queue!(
-                    stdout(),
-                    cursor::MoveToPreviousLine((1 + files.len()).try_into().unwrap(),)
-                );
-                let _ = stdout().flush();
-
-                // get key events
-
-                if let Event::Key(KeyEvent { code, .. }) = event::read().unwrap() {
-                    match code {
-                        KeyCode::Up => {
-                            if selected_index > 0 {
-                                selected_index -= 1;
-                            }
-                        }
-                        KeyCode::Down => {
-                            if selected_index < files.len() - 1 {
-                                selected_index += 1;
-                            }
-                        }
-                        KeyCode::Left => {
-                            current_page -= 1;
-                            if current_page == 0 {
-                                current_page = 1;
-                            }
-                        }
-                        KeyCode::Right => {
-                            current_page += 1;
-                            if current_page > total_pages {
-                                current_page = total_pages;
-                            }
-                        }
-                        KeyCode::Enter => {
-                            break;
-                        }
-                        KeyCode::Char('s') => {
-                            dup_fileset.result = DuplicateResult::Skipped;
-                            break;
-                        }
-                        KeyCode::Esc => {
-                            let _ = execute!(
-                                stdout(),
-                                style::ResetColor,
-                                cursor::Hide,
-                                terminal::LeaveAlternateScreen
-                            );
-                            return Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "User pressed ESC",
-                            ));
-                        }
-                        _ => {}
-                    }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return Err(e);
                 }
-            }
+            };
+
         }
     }
-    let _ = execute!(
-        stdout(),
-        style::ResetColor,
-        cursor::Hide,
-        terminal::LeaveAlternateScreen
-    );
+
     Ok(dup_fileset)
+}
+
+fn get_interactive_selection(files: &Vec<FileInfo>) -> Result<Option<FileInfo>, std::io::Error> {
+    // convert files into a string array
+    let file_strings: Vec<String> = files
+        .iter()
+        .map(|file| {
+            //{:<50} {:<20} {:<20}
+            format!(
+                "{:<50} [c:{:<20}] [m:{:<20}]",
+                file.path,
+                file.created_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S"),
+                file.modified_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+            )
+        })
+        .collect();
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select file to keep:")
+        .items(&file_strings)
+        .max_length(5)
+        .interact_opt()
+        .unwrap();
+
+    if selection.is_none() {
+        Ok(None)
+    } else {
+        let result = files[selection.unwrap()].clone();
+        Ok(Some(result))
+    }
 }
 
 fn create_duplicate_report(
@@ -1942,8 +1837,12 @@ mod tests {
     fn test_get_files_in_directory_notafolder() {
         let args = create_default_command_line_arguments();
         let multi = MultiProgress::new();
-        let result =
-            get_files_in_directory(&args, format!("{}/testnodupe.txt", args.shared.path), &multi, true);
+        let result = get_files_in_directory(
+            &args,
+            format!("{}/testnodupe.txt", args.shared.path),
+            &multi,
+            true,
+        );
         assert!(result.is_err());
     }
 
