@@ -65,7 +65,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{cursor, execute, queue, style};
 use glob;
 use md5::{self, Digest};
-use progressbar::AddLocation;
+//use progressbar::AddLocation;
 use std::collections::HashMap;
 use std::io::{self, stdout, Read, Write};
 #[cfg(target_os = "windows")]
@@ -763,10 +763,12 @@ fn get_files_in_directory(
         multi.add(progressbar::ProgressBar::hidden())
     } else {
         if multi.get_progress_bars_count() == 0 {
-            multi.add_with_location(
-                progressbar::ProgressBar::new_spinner().with_message("Processing files..."),
-                AddLocation::Bottom,
-            )
+            multi.println("Processing files...");
+            multi.add(progressbar::ProgressBar::hidden())
+            // multi.add_with_location(
+            //     progressbar::ProgressBar::new_spinner().with_message("Processing files..."),
+            //     AddLocation::Bottom,
+            // )
         } else {
             multi.add(progressbar::ProgressBar::hidden())
         }
@@ -1032,10 +1034,12 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
     let bar2 = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
     } else {
-        multi.add_with_location(
-            progressbar::ProgressBar::new_spinner().with_message("Identifying duplicates..."),
-            AddLocation::Bottom,
-        )
+        multi.println("Identifying duplicates...");
+        multi.add(progressbar::ProgressBar::hidden())
+        // multi.add_with_location(
+        //     progressbar::ProgressBar::new_spinner().with_message("Identifying duplicates..."),
+        //     AddLocation::Bottom,
+        // )
     };
 
     let bar = if args.shared.quiet {
@@ -1136,10 +1140,12 @@ fn process_duplicates<T: FileOperations>(
     let bar2 = if args.shared.quiet {
         multi.add(progressbar::ProgressBar::hidden())
     } else {
-        multi.add_with_location(
-            progressbar::ProgressBar::new_spinner().with_message("Processing duplicates..."),
-            AddLocation::Bottom,
-        )
+        multi.println("Processing duplicates...");
+        multi.add(progressbar::ProgressBar::hidden())
+        // multi.add_with_location(
+        //     progressbar::ProgressBar::new_spinner().with_message("Processing duplicates..."),
+        //     AddLocation::Bottom,
+        // )
     };
 
     let bar = if args.shared.quiet {
