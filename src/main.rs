@@ -58,18 +58,13 @@
 ///
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
-use dialoguer::console::style;
-// use crossterm::cursor::MoveToRow;
-// use crossterm::event::{self, Event, KeyCode, KeyEvent};
-// use crossterm::style::{Color, ResetColor, SetAttribute, SetForegroundColor};
-// use crossterm::terminal::{self, Clear, ClearType};
-// use crossterm::{cursor, execute, queue, style};
-use dialoguer::theme::ColorfulTheme;
-use dialoguer::Select;
+use dialoguer_ext::console::{style, Key};
+use dialoguer_ext::theme::ColorfulTheme;
+use dialoguer_ext::Select;
+use errors::{InteractiveError, InteractiveErrorKind};
 use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
-//use progressbar::AddLocation;
 use std::collections::HashMap;
 use std::io::{self, Read};
 #[cfg(target_os = "windows")]
@@ -82,7 +77,7 @@ use std::time::{Duration, Instant};
 use std::{fs, thread};
 use threadpool::ThreadPool;
 
-//mod progressbar;
+mod errors;
 
 const BUFFER_READ_SIZE: usize = 1024 * 1024;
 
@@ -412,64 +407,6 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// # myprintln
-/// Macro to print a line to the terminal.
-/// * `()` - Print a blank line.
-/// * `($($arg:tt)*)` - Print the formatted string.
-/// # Examples
-/// ```
-/// myprintln!();
-/// myprintln!("Hello, world!");
-/// ```
-// macro_rules! myprintln {
-//     () => {{
-//         let _ = execute!(
-//             stdout(),
-//             cursor::MoveToNextLine(1),
-//         );
-//         io::stdout().flush().unwrap();
-//     }};
-//     ($($arg:tt)*) => {{
-//         let formatted_string = format!($($arg)*);
-//         let _ = execute!(
-//             stdout(),
-//             style::Print(&formatted_string),
-//             cursor::MoveToNextLine(1),
-//         );
-//         io::stdout().flush().unwrap();
-//     }};
-// }
-
-/// # myeprintln
-/// Macro to print a line to the terminal in red.
-/// * `()` - Print a blank line.
-/// * `($($arg:tt)*)` - Print the formatted string.
-/// # Examples
-/// ```
-/// myeprintln!();
-/// myeprintln!("Error: Something went wrong");
-/// ```
-// macro_rules! myeprintln {
-//     () => {{
-//         let _ = execute!(
-//             stdout(),
-//             cursor::MoveToNextLine(1),
-//         );
-//         io::stdout().flush().unwrap();
-//     }};
-//     ($($arg:tt)*) => {{
-//         let formatted_string = format!($($arg)*);
-//         let _ = execute!(
-//             stdout(),
-//             style::SetForegroundColor(Color::Red),
-//             style::Print(&formatted_string),
-//             style::ResetColor,
-//             cursor::MoveToNextLine(1),
-//         );
-//         io::stdout().flush().unwrap();
-//     }};
-// }
-
 /// * `main` - Entry point of the program.
 #[cfg(not(tarpaulin_include))]
 fn main() {
@@ -533,42 +470,7 @@ fn main() {
 /// Function to print the banner to the terminal.
 fn print_banner() {
     println!("{}", style("dupefindr").bold());
-
-    // let _ = queue!(
-    //     stdout(),
-    //     SetAttribute(style::Attribute::Bold),
-    //     style::Print("dupefindr"),
-    //     cursor::MoveToNextLine(2),
-    //     SetAttribute(style::Attribute::Reset),
-    // );
-    // let _ = stdout().flush();
 }
-
-/// # setup_ctrlc_handler
-/// Function to setup the ctrl-c handler.
-//#[cfg(not(tarpaulin_include))]
-// fn setup_ctrlc_handler() {
-//     // spawn a thread that will get key events and check for ctrl-c
-//     std::thread::spawn(move || -> Result<(), anyhow::Error> {
-//         loop {
-//             // using a 10 ms timeout to be cpu friendly
-//             if event::poll(std::time::Duration::from_millis(10))? {
-//                 if let Event::Key(key_event) = event::read()? {
-//                     if key_event.code == KeyCode::Char('c')
-//                         && key_event
-//                             .modifiers
-//                             .contains(crossterm::event::KeyModifiers::CONTROL)
-//                     {
-//                         eprintln!("CTRL-C detected - program terminated.");
-//                         std::process::exit(-1);
-//                     }
-//                 }
-//             } else {
-//                 yield_now();
-//             }
-//         }
-//     });
-// }
 
 /// # setup_terminal
 /// Setup the terminal for the program.
@@ -1210,26 +1112,48 @@ fn process_duplicates<T: FileOperations>(
         ) {
             Ok(dup_fileset) => dup_fileset,
             Err(e) => {
-                if e.kind() == std::io::ErrorKind::Interrupted {
-                    break;
+                if e.kind() == InteractiveErrorKind::Skip {
+                    let r = DuplicateFileSet {
+                        hash: hash.to_string(),
+                        keeper: None,
+                        extras: vec![],
+                        result: DuplicateResult::Skipped,
+                    };
+                    r
+                } else if e.kind() == InteractiveErrorKind::Escape {
+                    let r = DuplicateFileSet {
+                        hash: hash.to_string(),
+                        keeper: None,
+                        extras: vec![],
+                        result: DuplicateResult::Aborted,
+                    };
+                    r
                 } else {
-                    eprintln!("Error selecting duplicate files: {}", e);
-                    continue;
+                    let r = DuplicateFileSet {
+                        hash: hash.to_string(),
+                        keeper: None,
+                        extras: vec![],
+                        result: DuplicateResult::Aborted,
+                    };
+                    r
                 }
             }
         };
-        if dup_fileset.keeper.is_none() {
-            panic!("keeper is none, this shouldn't happen!");
+        if dup_fileset.result == DuplicateResult::Aborted {
+            break;
         }
-        if args.shared.debug {
-            if let Some(ref keeper) = dup_fileset.keeper {
-                let _ = multi.println(&format!("Selected File: {}", keeper.path));
+        // only process if there is a file to process
+        if dup_fileset.keeper.is_some() {
+            if args.shared.debug {
+                if let Some(ref keeper) = dup_fileset.keeper {
+                    let _ = multi.println(&format!("Selected File: {}", keeper.path));
+                }
             }
-        }
 
-        for file in &dup_fileset.extras {
-            let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
-            yield_now();
+            for file in &dup_fileset.extras {
+                let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
+                yield_now();
+            }
         }
 
         dup_results.push(dup_fileset);
@@ -1467,7 +1391,7 @@ fn select_duplicate_files(
     position_duplicates: usize,
     total_duplicates: usize,
     _bar: &ProgressBar,
-) -> Result<DuplicateFileSet, std::io::Error> {
+) -> Result<DuplicateFileSet, InteractiveError> {
     let mut dup_fileset = DuplicateFileSet {
         hash: hash.to_string(),
         keeper: None,
@@ -1511,37 +1435,25 @@ fn select_duplicate_files(
             println!();
             println!("{}", style(title).bold());
             println!();
+            println!("Use ARROW keys to select a file to keep");
             println!("Press ENTER to keep the selected file and process the rest");
-            println!("Press ESC to exit");
+            println!("Press S to skip to the next duplicate");
+            println!("Press ESC to exit the program");
             println!();
             println!("{}", format!("For hash [{}]:", hash));
             println!();
 
-            match get_interactive_selection(files) {
-                Ok(f) => {
-                    if f.is_none() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "User pressed ESC",
-                        ));
-                    }
-                    else {
-                        dup_fileset.keeper = f;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    return Err(e);
-                }
+            dup_fileset.keeper = match get_interactive_selection(files) {
+                Ok(f) => f,
+                Err(e) => return Err(e),
             };
-
         }
     }
 
     Ok(dup_fileset)
 }
 
-fn get_interactive_selection(files: &Vec<FileInfo>) -> Result<Option<FileInfo>, std::io::Error> {
+fn get_interactive_selection(files: &Vec<FileInfo>) -> Result<Option<FileInfo>, InteractiveError> {
     // convert files into a string array
     let file_strings: Vec<String> = files
         .iter()
@@ -1560,18 +1472,31 @@ fn get_interactive_selection(files: &Vec<FileInfo>) -> Result<Option<FileInfo>, 
         })
         .collect();
 
+    let keys = vec![Key::Char('s')];
+
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select file to keep:")
         .items(&file_strings)
         .max_length(5)
-        .interact_opt()
+        .interact_opt_with_keys(&keys)
         .unwrap();
 
-    if selection.is_none() {
-        Ok(None)
+    // if selection.key is not none, then check to see what key the user pressed
+    if !selection.key.is_none() {
+        let key = selection.key.unwrap();
+        if key == Key::Char('s') {
+            Err(InteractiveError::Skip())
+        } else {
+            Err(InteractiveError::Other(format!("{:?}", key)))
+        }
     } else {
-        let result = files[selection.unwrap()].clone();
-        Ok(Some(result))
+        if selection.index.is_none() {
+            // user press escape
+            Err(InteractiveError::Escape())
+        } else {
+            let index = selection.index.unwrap();
+            Ok(Some(files[index].clone()))
+        }
     }
 }
 
