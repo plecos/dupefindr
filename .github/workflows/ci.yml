@@ -44,7 +44,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install gcc-multilib
       - name: Test
-        run: cargo test --test-threads=1 --all-features --target ${{ matrix.target }}
+        run: cargo test --all-features --target ${{ matrix.target }} -- --test-threads=1 
 
   lint:
     name: Linting (fmt + clippy)
