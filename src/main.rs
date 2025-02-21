@@ -20,11 +20,6 @@
 /// * `copy` - Copy duplicate files to a new location.
 /// * `delete` - Delete duplicate files.
 ///
-///
-
-///
-
-///
 /// # FileOperations
 ///
 /// Trait for file operations such as copy, move, and delete.
@@ -45,7 +40,6 @@
 ///
 /// # Functions
 ///
-
 /// * `get_command_line_arguments` - Parse and return command line arguments.
 /// * `start_search` - Start the search for duplicate files.
 /// * `get_files_in_directory` - Get files in the specified directory.
@@ -62,7 +56,6 @@ use dialoguer_ext::console::{style, Key};
 use dialoguer_ext::theme::ColorfulTheme;
 use dialoguer_ext::Select;
 use errors::{InteractiveError, InteractiveErrorKind};
-use glob;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use md5::{self, Digest};
 use std::collections::HashMap;
@@ -173,7 +166,7 @@ enum DuplicateSelectionMethod {
 #[derive(Subcommand, Debug, PartialEq, Clone)]
 enum Commands {
     #[command(name = "find", about = "Find duplicate files")]
-    FindDuplicates {
+    Find {
         /// Method to select the file to keep
         /// Example: newest, oldest, largest, smallest
         #[arg(short, long, default_value = "newest")]
@@ -181,7 +174,7 @@ enum Commands {
     },
 
     #[command(name = "move", about = "Move duplicate files to a new location")]
-    MoveDuplicates {
+    Move {
         /// The directory to move to.
         #[arg(short, long)]
         location: String,
@@ -204,7 +197,7 @@ enum Commands {
         overwrite: bool,
     },
     #[command(name = "copy", about = "Copy duplicate files to a new location")]
-    CopyDuplicates {
+    Copy {
         /// The directory to copy to.
         #[arg(short, long)]
         location: String,
@@ -226,7 +219,7 @@ enum Commands {
         overwrite: bool,
     },
     #[command(name = "delete", about = "Delete duplicate files")]
-    DeleteDuplicates {
+    Delete {
         /// Method to select the file to keep
         /// Example: newest, oldest, largest, smallest
         #[arg(short, long, default_value = "newest")]
@@ -433,7 +426,7 @@ fn main() {
 
     print_banner();
 
-    if let Err(_) = get_command_line_arguments(&args) {
+    if get_command_line_arguments(&args).is_err() {
         reset_terminal();
         std::process::exit(-1);
     }
@@ -610,7 +603,7 @@ fn start_search<T: FileOperations>(file_ops: &T, args: &Args) -> Result<SearchRe
 
     // create report if configured
     if args.shared.create_report {
-        let _ = create_duplicate_report(&args, dup_fileset_vec);
+        let _ = create_duplicate_report(args, dup_fileset_vec);
     }
 
     // return the search results
@@ -656,7 +649,7 @@ fn get_files_in_directory(
         }
     }
     if args.shared.debug {
-        let _ = multi.println(&format!("Collecting objects in: {}", folder_path));
+        let _ = multi.println(format!("Collecting objects in: {}", folder_path));
     }
 
     // collect the entries in the directory
@@ -664,7 +657,7 @@ fn get_files_in_directory(
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
     if args.shared.debug {
-        let _ = multi.println(&format!("Finished collecting objects in: {}", folder_path));
+        let _ = multi.println(format!("Finished collecting objects in: {}", folder_path));
     }
 
     // only add a spinner if the multi is empty
@@ -691,7 +684,7 @@ fn get_files_in_directory(
     let files_count = entries.len();
 
     if args.shared.debug {
-        let _ = multi.println(&format!("Iterating entries: {}", folder_path));
+        let _ = multi.println(format!("Iterating entries: {}", folder_path));
     }
 
     // use thread pool to optimize the process of scanning then directory objects
@@ -707,7 +700,7 @@ fn get_files_in_directory(
         });
     }
     if args.shared.debug {
-        let _ = multi.println(&format!("Completed iterating entries: {}", folder_path));
+        let _ = multi.println(format!("Completed iterating entries: {}", folder_path));
     }
 
     // wait for the jobs to complete, and process the results
@@ -765,23 +758,21 @@ fn get_files_in_directory(
                 }
             }
 
-            if hidden {
-                if args.shared.include_hidden_files == false {
-                    if args.shared.verbose {
-                        let _ = multi.println(&format!(
-                            "Ignoring hidden directory: {}",
-                            fld.file_name().unwrap().to_str().unwrap()
-                        ));
-                    }
-                    bar2.inc(1);
-                    continue;
+            if hidden && !args.shared.include_hidden_files {
+                if args.shared.verbose {
+                    let _ = multi.println(format!(
+                        "Ignoring hidden directory: {}",
+                        fld.file_name().unwrap().to_str().unwrap()
+                    ));
                 }
+                bar2.inc(1);
+                continue;
             }
 
             // if we aren't recursive, then ignore any folders we find
             if !args.shared.recursive {
                 if args.shared.verbose {
-                    let _ = multi.println(&format!(
+                    let _ = multi.println(format!(
                         "Ignoring directory: {}",
                         fld.file_name().unwrap().to_str().unwrap()
                     ));
@@ -830,7 +821,7 @@ fn get_files_in_directory(
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
                 if !wildcard_pattern.matches_path(path) {
                     if args.shared.verbose {
-                        let _ = multi.println(&format!(
+                        let _ = multi.println(format!(
                             "Ignoring file (does not match wildcard): {}",
                             path.to_str().unwrap()
                         ));
@@ -839,13 +830,13 @@ fn get_files_in_directory(
                     continue;
                 }
                 // determine if the file matches the exclusion wildcard
-                if args.shared.exclusion_wildcard.len() > 0 {
+                if !args.shared.exclusion_wildcard.is_empty() {
                     let exclusion_wildcard_pattern =
                         glob::Pattern::new(&args.shared.exclusion_wildcard)
                             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                     if exclusion_wildcard_pattern.matches_path(path) {
                         if args.shared.verbose {
-                            let _ = multi.println(&format!(
+                            let _ = multi.println(format!(
                                 "Ignoring file (matches exclusion wildcard): {}",
                                 path.to_str().unwrap()
                             ));
@@ -869,24 +860,24 @@ fn get_files_in_directory(
                         hidden = false;
                     }
                 }
-                if args.shared.include_hidden_files == false && hidden {
+                if !args.shared.include_hidden_files && hidden {
                     // skip hidden files if not including them
                     if args.shared.verbose {
                         let _ = multi
-                            .println(&format!("Ignoring hidden file: {}", path.to_str().unwrap()));
+                            .println(format!("Ignoring hidden file: {}", path.to_str().unwrap()));
                     }
 
                     bar2.inc(1);
                     continue;
                 }
                 // get the file metadata
-                let meta = std::fs::metadata(&path).unwrap();
+                let meta = std::fs::metadata(path).unwrap();
                 let size = meta.len();
                 if size == 0 && !args.shared.include_empty_files {
                     // skip empty files if not including them
                     if args.shared.verbose {
                         let _ = multi
-                            .println(&format!("Ignoring empty file: {}", path.to_str().unwrap()));
+                            .println(format!("Ignoring empty file: {}", path.to_str().unwrap()));
                     }
 
                     bar2.inc(1);
@@ -913,7 +904,7 @@ fn get_files_in_directory(
                 files.push(file_info);
 
                 if args.shared.debug {
-                    let _ = multi.println(&format!(
+                    let _ = multi.println(format!(
                         "Selected File: {} [created: {}] [modified: {}] [{} bytes]",
                         path.to_str().unwrap(),
                         created_at_utc_datetime.to_rfc2822(),
@@ -985,7 +976,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
                 Ok(hash_string) => tx.send((hash_string, file.clone())).unwrap(),
                 Err(e) => {
                     eprintln!("{}", e);
-                    return tx.send((String::new(), file.clone())).unwrap();
+                    tx.send((String::new(), file.clone())).unwrap()
                 }
             }
         });
@@ -995,7 +986,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
     rx.iter().take(files_count).for_each(|(hash_string, file)| {
         if hash_string.is_empty() {
             if args.shared.debug {
-                let _ = multi.println(&format!(
+                let _ = multi.println(format!(
                     "File: {} [{} bytes] [error calculating hash]",
                     file.path, file.size
                 ));
@@ -1003,7 +994,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
             return;
         }
         if args.shared.verbose {
-            let _ = multi.println(&format!(
+            let _ = multi.println(format!(
                 "File: {} [{} bytes] [hash: {}]",
                 file.path, file.size, hash_string
             ));
@@ -1011,8 +1002,7 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
         // add the file and hash to the map
         // if the hash doesn't exist, create a new vector
         if !hash_map.contains_key(&hash_string) {
-            let mut vec = Vec::new();
-            vec.push(file);
+            let vec = vec![file];
             hash_map.insert(hash_string.to_string(), vec);
         } else {
             let vec = hash_map.get_mut(&hash_string).unwrap();
@@ -1021,8 +1011,8 @@ fn identify_duplicates(args: &Args, files: Vec<FileInfo>) -> HashMap<String, Vec
         bar.inc(1);
     });
 
-    let _ = bar.finish();
-    let _ = bar2.finish();
+    bar.finish();
+    bar2.finish();
 
     multi.remove(&bar2);
     multi.remove(&bar);
@@ -1070,16 +1060,16 @@ fn process_duplicates<T: FileOperations>(
 
     // get the method
     let method = match &args.command {
-        Commands::MoveDuplicates { method, .. } => method,
-        Commands::CopyDuplicates { method, .. } => method,
-        Commands::DeleteDuplicates { method } => method,
-        Commands::FindDuplicates { method } => method,
+        Commands::Move { method, .. } => method,
+        Commands::Copy { method, .. } => method,
+        Commands::Delete { method } => method,
+        Commands::Find { method } => method,
     };
 
     // if the duplicate selection method is "interactive" then we need to turn off the progress bars
     if *method == DuplicateSelectionMethod::Interactive {
-        let _ = bar.finish();
-        let _ = bar2.finish();
+        bar.finish();
+        bar2.finish();
         multi.remove(&bar2);
         multi.remove(&bar);
         multi.clear().unwrap();
@@ -1097,7 +1087,7 @@ fn process_duplicates<T: FileOperations>(
         new_hash_map.insert(hash.clone(), files.clone());
 
         // if the command is FindDuplicates, then we don't need to process the duplicates
-        if let Commands::FindDuplicates { .. } = args.command {
+        if let Commands::Find { .. } = args.command {
             continue;
         }
 
@@ -1113,29 +1103,19 @@ fn process_duplicates<T: FileOperations>(
             Ok(dup_fileset) => dup_fileset,
             Err(e) => {
                 if e.kind() == InteractiveErrorKind::Skip {
-                    let r = DuplicateFileSet {
+                    DuplicateFileSet {
                         hash: hash.to_string(),
                         keeper: None,
                         extras: vec![],
                         result: DuplicateResult::Skipped,
-                    };
-                    r
-                } else if e.kind() == InteractiveErrorKind::Escape {
-                    let r = DuplicateFileSet {
-                        hash: hash.to_string(),
-                        keeper: None,
-                        extras: vec![],
-                        result: DuplicateResult::Aborted,
-                    };
-                    r
+                    }
                 } else {
-                    let r = DuplicateFileSet {
+                    DuplicateFileSet {
                         hash: hash.to_string(),
                         keeper: None,
                         extras: vec![],
                         result: DuplicateResult::Aborted,
-                    };
-                    r
+                    }
                 }
             }
         };
@@ -1146,12 +1126,12 @@ fn process_duplicates<T: FileOperations>(
         if dup_fileset.keeper.is_some() {
             if args.shared.debug {
                 if let Some(ref keeper) = dup_fileset.keeper {
-                    let _ = multi.println(&format!("Selected File: {}", keeper.path));
+                    let _ = multi.println(format!("Selected File: {}", keeper.path));
                 }
             }
 
             for file in &dup_fileset.extras {
-                let _ = process_a_duplicate_file(file_ops, args, &file, &hash, &mut multi);
+                let _ = process_a_duplicate_file(file_ops, args, file, hash, &mut multi);
                 yield_now();
             }
         }
@@ -1161,8 +1141,8 @@ fn process_duplicates<T: FileOperations>(
         bar.inc(1);
     }
 
-    let _ = bar.finish();
-    let _ = bar2.finish();
+    bar.finish();
+    bar2.finish();
     multi.remove(&bar2);
     multi.remove(&bar);
     multi.clear().unwrap();
@@ -1189,31 +1169,31 @@ fn process_a_duplicate_file<T: FileOperations>(
     let source = &file.path;
     //let file_name = Path::new(&file.path).file_name().unwrap().to_str().unwrap();
     let location = match &args.command {
-        Commands::MoveDuplicates { location, .. } => location,
-        Commands::CopyDuplicates { location, .. } => location,
-        Commands::DeleteDuplicates { method: _ } => "",
-        Commands::FindDuplicates { method: _ } => "",
+        Commands::Move { location, .. } => location,
+        Commands::Copy { location, .. } => location,
+        Commands::Delete { method: _ } => "",
+        Commands::Find { method: _ } => "",
     };
 
     let flatten = match &args.command {
-        Commands::MoveDuplicates { flatten, .. } => *flatten,
-        Commands::CopyDuplicates { flatten, .. } => *flatten,
-        Commands::DeleteDuplicates { method: _ } => false,
-        Commands::FindDuplicates { method: _ } => false,
+        Commands::Move { flatten, .. } => *flatten,
+        Commands::Copy { flatten, .. } => *flatten,
+        Commands::Delete { method: _ } => false,
+        Commands::Find { method: _ } => false,
     };
 
     let no_hash_folder = match &args.command {
-        Commands::MoveDuplicates { no_hash_folder, .. } => *no_hash_folder,
-        Commands::CopyDuplicates { no_hash_folder, .. } => *no_hash_folder,
-        Commands::DeleteDuplicates { method: _ } => false,
-        Commands::FindDuplicates { method: _ } => false,
+        Commands::Move { no_hash_folder, .. } => *no_hash_folder,
+        Commands::Copy { no_hash_folder, .. } => *no_hash_folder,
+        Commands::Delete { method: _ } => false,
+        Commands::Find { method: _ } => false,
     };
 
     let overwrite = match &args.command {
-        Commands::MoveDuplicates { overwrite, .. } => *overwrite,
-        Commands::CopyDuplicates { overwrite, .. } => *overwrite,
-        Commands::DeleteDuplicates { method: _ } => false,
-        Commands::FindDuplicates { method: _ } => false,
+        Commands::Move { overwrite, .. } => *overwrite,
+        Commands::Copy { overwrite, .. } => *overwrite,
+        Commands::Delete { method: _ } => false,
+        Commands::Find { method: _ } => false,
     };
 
     let relative_path = Path::new(&file.path)
@@ -1241,8 +1221,8 @@ fn process_a_duplicate_file<T: FileOperations>(
         #[cfg(target_os = "windows")]
         destination_folder.push_str("\\");
         #[cfg(not(target_os = "windows"))]
-        destination_folder.push_str("/");
-        destination_folder.push_str(&hash);
+        destination_folder.push('/');
+        destination_folder.push_str(hash);
     }
 
     let mut destination = destination_folder.clone();
@@ -1250,35 +1230,26 @@ fn process_a_duplicate_file<T: FileOperations>(
     #[cfg(target_os = "windows")]
     destination.push_str("\\");
     #[cfg(not(target_os = "windows"))]
-    destination.push_str("/");
+    destination.push('/');
     destination.push_str(Path::new(&file.path).file_name().unwrap().to_str().unwrap());
 
-    let command_text: String;
     let mut error: Option<std::io::Error> = None;
 
-    match args.command {
-        Commands::FindDuplicates { .. } => {
-            command_text = "Find".to_string();
-        }
-        Commands::MoveDuplicates { .. } => {
-            command_text = "Move".to_string();
-        }
-        Commands::CopyDuplicates { .. } => {
-            command_text = "Copy".to_string();
-        }
-        Commands::DeleteDuplicates { .. } => {
-            command_text = "Delete".to_string();
-        }
-    }
+    let command_text: String = match args.command {
+        Commands::Find { .. } => "Find".to_string(),
+        Commands::Move { .. } => "Move".to_string(),
+        Commands::Copy { .. } => "Copy".to_string(),
+        Commands::Delete { .. } => "Delete".to_string(),
+    };
 
     // if not a dry run, then perform the operation
     if !args.shared.dry_run {
         if args.shared.verbose {
             // location is empty for Find and Delete commands
             if location.is_empty() {
-                let _ = multi.println(&format!("{}ing: {}", command_text, source));
+                let _ = multi.println(format!("{}ing: {}", command_text, source));
             } else {
-                let _ = multi.println(&format!(
+                let _ = multi.println(format!(
                     "{}ing: {} to {}",
                     command_text, source, destination
                 ));
@@ -1286,13 +1257,13 @@ fn process_a_duplicate_file<T: FileOperations>(
         }
 
         match args.command {
-            Commands::FindDuplicates { .. } => {}
-            Commands::MoveDuplicates { .. } => {
+            Commands::Find { .. } => {}
+            Commands::Move { .. } => {
                 if let Err(result) = file_ops.rename(source, &destination, overwrite) {
                     error = Some(result);
                 }
             }
-            Commands::CopyDuplicates { .. } => {
+            Commands::Copy { .. } => {
                 if let Err(result) = fs::create_dir_all(&destination_folder) {
                     let _ = multi.println(
                         format!(
@@ -1306,7 +1277,7 @@ fn process_a_duplicate_file<T: FileOperations>(
                     error = Some(result);
                 }
             }
-            Commands::DeleteDuplicates { .. } => {
+            Commands::Delete { .. } => {
                 if let Err(result) = file_ops.remove_file(source) {
                     error = Some(result);
                 }
@@ -1314,19 +1285,18 @@ fn process_a_duplicate_file<T: FileOperations>(
         }
 
         if error.is_some() {
-            let _ = multi.println(&format!(
+            let _ = multi.println(format!(
                 "*** Failed to {} {} to {}: {:?}",
                 command_text, source, destination, error
             ));
         }
-    } else {
-        if args.shared.verbose {
-            let _ = multi.println(&format!(
-                "Dry run: Would {} {} to {}",
-                command_text, source, destination
-            ));
-        }
+    } else if args.shared.verbose {
+        let _ = multi.println(format!(
+            "Dry run: Would {} {} to {}",
+            command_text, source, destination
+        ));
     }
+
     match error {
         Some(e) => Err(e),
         None => Ok(()),
@@ -1365,7 +1335,7 @@ fn get_hash_of_file(file_path: &str, _bar: &ProgressBar) -> Result<String, std::
             Ok(format!("{:x}", hash))
         }
         Err(e) => {
-            eprintln!("{}", format!("{:?}", e));
+            eprintln!("{:?}", e);
             Err(e)
         }
     }
@@ -1387,7 +1357,7 @@ fn select_duplicate_files(
     command: Commands,
     method: DuplicateSelectionMethod,
     hash: &String,
-    files: &Vec<FileInfo>,
+    files: &[FileInfo],
     position_duplicates: usize,
     total_duplicates: usize,
     _bar: &ProgressBar,
@@ -1402,15 +1372,15 @@ fn select_duplicate_files(
         return Ok(dup_fileset);
     }
     match command {
-        Commands::FindDuplicates { .. } => dup_fileset.result = DuplicateResult::Found,
-        Commands::MoveDuplicates { .. } => dup_fileset.result = DuplicateResult::Moved,
-        Commands::CopyDuplicates { .. } => dup_fileset.result = DuplicateResult::Copied,
-        Commands::DeleteDuplicates { .. } => dup_fileset.result = DuplicateResult::Deleted,
+        Commands::Find { .. } => dup_fileset.result = DuplicateResult::Found,
+        Commands::Move { .. } => dup_fileset.result = DuplicateResult::Moved,
+        Commands::Copy { .. } => dup_fileset.result = DuplicateResult::Copied,
+        Commands::Delete { .. } => dup_fileset.result = DuplicateResult::Deleted,
     }
     match method {
         DuplicateSelectionMethod::Newest => {
             // keep the newest file, so return all other files
-            let mut sorted_files = files.clone();
+            let mut sorted_files = files.to_owned();
             sorted_files.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
             let keeper = sorted_files.swap_remove(0);
             dup_fileset.keeper = Some(keeper);
@@ -1418,7 +1388,7 @@ fn select_duplicate_files(
         }
         DuplicateSelectionMethod::Oldest => {
             // keep the oldest file, so return all other files
-            let mut sorted_files = files.clone();
+            let mut sorted_files = files.to_owned();
             sorted_files.sort_by(|a, b| a.modified_at.cmp(&b.modified_at));
             let keeper = sorted_files.swap_remove(0);
             dup_fileset.keeper = Some(keeper);
@@ -1427,7 +1397,7 @@ fn select_duplicate_files(
         // not sure how to test the interactive code right now
         #[cfg(not(tarpaulin_include))]
         DuplicateSelectionMethod::Interactive => {
-            dup_fileset.extras = files.clone();
+            dup_fileset.extras = files.to_owned();
             let title = format!(
                 "Duplicate File Interactive Selector [{}/{}]",
                 position_duplicates, total_duplicates
@@ -1440,20 +1410,17 @@ fn select_duplicate_files(
             println!("Press S to skip to the next duplicate");
             println!("Press ESC to exit the program");
             println!();
-            println!("{}", format!("For hash [{}]:", hash));
+            println!("For hash [{}]:", hash);
             println!();
 
-            dup_fileset.keeper = match get_interactive_selection(files) {
-                Ok(f) => f,
-                Err(e) => return Err(e),
-            };
+            dup_fileset.keeper = get_interactive_selection(files)?
         }
     }
 
     Ok(dup_fileset)
 }
 
-fn get_interactive_selection(files: &Vec<FileInfo>) -> Result<Option<FileInfo>, InteractiveError> {
+fn get_interactive_selection(files: &[FileInfo]) -> Result<Option<FileInfo>, InteractiveError> {
     // convert files into a string array
     let file_strings: Vec<String> = files
         .iter()
@@ -1482,21 +1449,19 @@ fn get_interactive_selection(files: &Vec<FileInfo>) -> Result<Option<FileInfo>, 
         .unwrap();
 
     // if selection.key is not none, then check to see what key the user pressed
-    if !selection.key.is_none() {
+    if selection.key.is_some() {
         let key = selection.key.unwrap();
         if key == Key::Char('s') {
             Err(InteractiveError::Skip())
         } else {
             Err(InteractiveError::Other(format!("{:?}", key)))
         }
+    } else if selection.index.is_none() {
+        // user press escape
+        Err(InteractiveError::Escape())
     } else {
-        if selection.index.is_none() {
-            // user press escape
-            Err(InteractiveError::Escape())
-        } else {
-            let index = selection.index.unwrap();
-            Ok(Some(files[index].clone()))
-        }
+        let index = selection.index.unwrap();
+        Ok(Some(files[index].clone()))
     }
 }
 
@@ -1513,7 +1478,7 @@ fn create_duplicate_report(
 
     let mut wtr = csv::Writer::from_path(&args.shared.report_path)?;
 
-    wtr.write_record(&[
+    wtr.write_record([
         "Hash",
         "File Path",
         "Size",
@@ -1626,13 +1591,12 @@ mod tests {
             report_path: "./dupefinder-report.csv".to_string(),
         };
         let s1 = shared_options.clone();
-        let args = Args {
+        Args {
             shared: s1,
-            command: Commands::FindDuplicates {
+            command: Commands::Find {
                 method: DuplicateSelectionMethod::Newest,
             },
-        };
-        args
+        }
     }
 
     #[test]
@@ -1821,7 +1785,7 @@ mod tests {
     #[test]
     fn test_start_search_copy() {
         let mut args = create_default_command_line_arguments();
-        args.command = Commands::CopyDuplicates {
+        args.command = Commands::Copy {
             location: "/tmp".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -1837,7 +1801,7 @@ mod tests {
     #[test]
     fn test_start_search_move() {
         let mut args = create_default_command_line_arguments();
-        args.command = Commands::MoveDuplicates {
+        args.command = Commands::Move {
             location: "/tmp".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -1853,7 +1817,7 @@ mod tests {
     #[test]
     fn test_start_search_delete() {
         let mut args = create_default_command_line_arguments();
-        args.command = Commands::DeleteDuplicates {
+        args.command = Commands::Delete {
             method: DuplicateSelectionMethod::Newest,
         };
         let file_ops = MockFileOperationsOk;
@@ -1897,7 +1861,7 @@ mod tests {
 
         println!("Temporary location : {}", temp_path);
 
-        args.command = Commands::CopyDuplicates {
+        args.command = Commands::Copy {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -1929,7 +1893,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
 
-        args.command = Commands::CopyDuplicates {
+        args.command = Commands::Copy {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -1961,7 +1925,7 @@ mod tests {
         args.shared.create_report = true;
         args.shared.report_path = "./testreport.csv".to_string();
 
-        args.command = Commands::CopyDuplicates {
+        args.command = Commands::Copy {
             location: temp_path,
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -2090,7 +2054,7 @@ mod tests {
             &bar,
         )
         .unwrap();
-        assert_eq!(dup_fileset.keeper.is_some(), true);
+        assert!(dup_fileset.keeper.is_some());
         assert_eq!(
             dup_fileset.keeper.unwrap().path,
             format!("{}//testdupe1.txt", args.shared.path.clone())
@@ -2143,7 +2107,7 @@ mod tests {
             &bar,
         )
         .unwrap();
-        assert_eq!(dup_fileset.keeper.is_some(), true);
+        assert!(dup_fileset.keeper.is_some());
         assert_eq!(
             dup_fileset.keeper.unwrap().path,
             format!("{}//testdupe3.txt", args.shared.path.clone()),
@@ -2179,7 +2143,7 @@ mod tests {
             &bar,
         )
         .unwrap();
-        assert_eq!(dup_fileset.keeper.is_none(), true);
+        assert!(dup_fileset.keeper.is_none());
         assert_eq!(dup_fileset.extras.len(), 0);
     }
 
@@ -2248,7 +2212,7 @@ mod tests {
     fn test_process_a_duplicate_delete_badfilepath() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::DeleteDuplicates {
+        args.command = Commands::Delete {
             method: DuplicateSelectionMethod::Newest,
         };
         let mut multi = MultiProgress::new();
@@ -2270,7 +2234,7 @@ mod tests {
     fn test_process_a_duplicate_delete() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::DeleteDuplicates {
+        args.command = Commands::Delete {
             method: DuplicateSelectionMethod::Newest,
         };
         let mut multi = MultiProgress::new();
@@ -2292,7 +2256,7 @@ mod tests {
     fn test_process_a_duplicate_copy_badfilepath() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::CopyDuplicates {
+        args.command = Commands::Copy {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -2318,7 +2282,7 @@ mod tests {
     fn test_process_a_duplicate_copy() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::CopyDuplicates {
+        args.command = Commands::Copy {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -2344,7 +2308,7 @@ mod tests {
     fn test_process_a_duplicate_move_badfilepath() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::MoveDuplicates {
+        args.command = Commands::Move {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -2370,7 +2334,7 @@ mod tests {
     fn test_process_a_duplicate_move() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::MoveDuplicates {
+        args.command = Commands::Move {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
@@ -2396,7 +2360,7 @@ mod tests {
     fn test_process_duplicates_move() {
         let mut args = create_default_command_line_arguments();
         args.shared.dry_run = false;
-        args.command = Commands::MoveDuplicates {
+        args.command = Commands::Move {
             location: "/bad/path".to_string(),
             method: DuplicateSelectionMethod::Newest,
             flatten: false,
