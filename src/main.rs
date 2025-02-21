@@ -1656,9 +1656,9 @@ mod tests {
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         // under windows .testhidden is not considered a hidden file
         #[cfg(target_os = "windows")]
-        assert_eq!(files.len(), 6);
+        assert_eq!(files.len(), 9);
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(files.len(), 5);
+        assert_eq!(files.len(), 8);
     }
 
     #[test]
@@ -1669,9 +1669,9 @@ mod tests {
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         // under windows .testhidden is not considered a hidden file
         #[cfg(target_os = "windows")]
-        assert_eq!(files.len(), 6);
+        assert_eq!(files.len(), 9);
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(files.len(), 5);
+        assert_eq!(files.len(), 8);
     }
 
     #[test]
@@ -1680,7 +1680,7 @@ mod tests {
         args.shared.wildcard = "*testdupe*.txt".to_string();
         let multi = MultiProgress::new();
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
-        assert_eq!(files.len(), 4);
+        assert_eq!(files.len(), 7);
     }
 
     #[test]
@@ -1703,9 +1703,9 @@ mod tests {
         let multi = MultiProgress::new();
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         #[cfg(target_os = "windows")]
-        assert_eq!(files.len(), 8);
+        assert_eq!(files.len(), 11);
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(files.len(), 7);
+        assert_eq!(files.len(), 10);
     }
 
     #[test]
@@ -1714,7 +1714,7 @@ mod tests {
         args.shared.include_hidden_files = true;
         let multi = MultiProgress::new();
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
-        assert_eq!(files.len(), 6);
+        assert_eq!(files.len(), 9);
     }
 
     #[test]
@@ -1724,7 +1724,7 @@ mod tests {
         args.shared.include_empty_files = true;
         let multi = MultiProgress::new();
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
-        assert_eq!(files.len(), 8);
+        assert_eq!(files.len(), 11);
     }
 
     #[test]
@@ -1734,9 +1734,9 @@ mod tests {
         let multi = MultiProgress::new();
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
         #[cfg(target_os = "windows")]
-        assert_eq!(files.len(), 19);
+        assert_eq!(files.len(), 22);
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(files.len(), 16);
+        assert_eq!(files.len(), 19);
     }
 
     #[test]
@@ -1746,7 +1746,7 @@ mod tests {
         args.shared.include_hidden_files = true;
         let multi = MultiProgress::new();
         let files = get_files_in_directory(&args, args.shared.path.clone(), &multi, true).unwrap();
-        assert_eq!(files.len(), 19);
+        assert_eq!(files.len(), 22);
     }
 
     #[test]
@@ -1998,7 +1998,7 @@ mod tests {
                 duplicates_found += 1;
             }
         }
-        assert_eq!(duplicates_found, 1);
+        assert_eq!(duplicates_found, 2);
     }
 
     #[test]
@@ -2015,7 +2015,7 @@ mod tests {
                 duplicates_found += 1;
             }
         }
-        assert_eq!(duplicates_found, 1);
+        assert_eq!(duplicates_found, 2);
     }
 
     #[test]
