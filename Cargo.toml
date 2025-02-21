@@ -1,11 +1,21 @@
 [package]
 name = "dupefindr"
+description = "A utility to find and remove duplicate files"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.84.0"
+authors = [
+    "Ken Salter <ken@thesalters.net>",
+]
+keywords = ["cli","duplicates","files","file management"]
+categories = ["command-line-interface"]
+license = "GPL-3.0-or-later"
+homepage = "https://github.com/plecos/dupefindr"
+repository = "https://github.com/plecos/dupefindr"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.95"
-atty = "0.2.14"
 bytesize = "1.3.0"
 chrono = "0.4.39"
 clap = { version = "4.5.27", features = ["derive"] }
