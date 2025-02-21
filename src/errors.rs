@@ -1,9 +1,8 @@
-
 #[derive(Debug, PartialEq)]
 pub enum InteractiveErrorKind {
     Skip,
     Escape,
-    Other
+    Other,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -15,7 +14,7 @@ pub enum InteractiveError {
     Escape(),
 
     #[error("Other: {0}")]
-    Other(String)
+    Other(String),
 }
 
 impl InteractiveError {
@@ -23,7 +22,7 @@ impl InteractiveError {
         match self {
             InteractiveError::Skip() => InteractiveErrorKind::Skip,
             InteractiveError::Escape() => InteractiveErrorKind::Escape,
-            InteractiveError::Other(_) => InteractiveErrorKind::Other
+            InteractiveError::Other(_) => InteractiveErrorKind::Other,
         }
     }
 }
