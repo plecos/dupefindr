@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["-p","/Volumes/Photos","-r","find"],
+            "args": ["-p","./testdata","-r","copy","--location","/tmp","--method","interactive"],
             "cwd": "${workspaceFolder}"
         },
         {
